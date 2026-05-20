@@ -1,0 +1,8 @@
+AI_AGENT_RULES.local.md
+.env
+.env.*
+*.pem
+*.key
+*.p12
+secrets.*
+credentials.*
