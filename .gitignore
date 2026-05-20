@@ -15,3 +15,13 @@ PROJECT_CONTEXT.md
 STRUCTURE.md
 prompt_pai.md
 docs/
+
+# Python generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
+recordings/
