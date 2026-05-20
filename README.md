@@ -2,9 +2,26 @@
 
 Aplicacao para Windows que grava audio local em `.mp3`, incluindo microfone e audio do sistema.
 
+## Requisitos
+
+- Windows.
+- Python 3.12 ou superior.
+- Na instalacao do Python, marque `Add python.exe to PATH`.
+
 ## Como usar no Windows
 
-### 1. Instalar
+### 1. Baixar o projeto
+
+Baixe ou clone este repositorio no Windows.
+
+Se usar Git:
+
+```powershell
+git clone https://github.com/VictorJurado18/gavador_audio.git
+cd gavador_audio
+```
+
+### 2. Instalar
 
 Duas vezes clique em:
 
@@ -14,9 +31,7 @@ Instalar.bat
 
 Esse script cria o ambiente local `.venv` e instala as dependencias de audio.
 
-Requisito: Python 3.12 ou superior instalado no Windows.
-
-### 2. Abrir a interface
+### 3. Abrir a interface
 
 Duas vezes clique em:
 
@@ -28,7 +43,15 @@ Esse arquivo abre a interface sem mostrar uma janela de prompt.
 
 Na janela, escolha o modo de captura e clique em `Iniciar gravacao`. Para finalizar, clique em `Parar gravacao`.
 
-### 3. Gravar pelo modo guiado no terminal
+Os arquivos gerados ficam por padrao em:
+
+```text
+C:\Users\<seu-usuario>\Music\gravador_audio\
+```
+
+Na interface, voce pode escolher outra pasta antes de iniciar.
+
+### Alternativa: gravar pelo modo guiado no terminal
 
 Duas vezes clique em:
 
@@ -40,14 +63,6 @@ O programa pergunta:
 
 - quantos segundos deseja gravar;
 - se quer gravar microfone + sistema, so microfone ou so sistema.
-
-Os arquivos gerados ficam por padrao em:
-
-```text
-C:\Users\<seu-usuario>\Music\gravador_audio\
-```
-
-Na interface, voce pode escolher outra pasta antes de iniciar.
 
 ## Uso tecnico
 
