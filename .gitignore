@@ -1,0 +1,17 @@
+AI_AGENT_RULES.local.md
+.env
+.env.*
+*.pem
+*.key
+*.p12
+secrets.*
+credentials.*
+
+# AI agent context and spec workflow files
+AGENTS.md
+AI_AGENT_RULES.md
+PROMPT.md
+PROJECT_CONTEXT.md
+STRUCTURE.md
+prompt_pai.md
+docs/
