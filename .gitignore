@@ -6,3 +6,26 @@ AI_AGENT_RULES.local.md
 *.p12
 secrets.*
 credentials.*
+
+# AI agent context and spec workflow files
+AGENTS.md
+AI_AGENT_RULES.md
+PROMPT.md
+PROJECT_CONTEXT.md
+STRUCTURE.md
+prompt_pai.md
+docs/
+
+# Python generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
+recordings/
+build/
+dist/
+*.spec
+*.log
