@@ -253,7 +253,10 @@ class RecorderApp(tk.Tk):
         self._started_at = None
         self._last_output = output_path
         self.last_file.set(str(output_path))
-        self._start_pipeline(output_path, language="pt")
+        lang_label = self.pipeline_language.get()
+        lang_code = _LANG_CODES.get(lang_label, "pt")
+        self.status.set("Iniciando pipeline...")
+        self._start_pipeline(output_path, language=lang_code)
 
     def _update_device_info(self) -> None:
         if self._service is None:

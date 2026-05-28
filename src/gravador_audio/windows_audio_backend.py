@@ -214,6 +214,8 @@ class WindowsAudioBackend(AudioBackend):
         # Mic callback delivers ~10 ms chunks; loopback blocking-thread delivers
         # exactly this size → accumulators stay balanced.
         _OUT = int(self._config.sample_rate * 0.1)
+        _OUT_SECS = _OUT / self._config.sample_rate
+        _MAX_LOOP_FRAMES = self._config.sample_rate * 2
 
         chunk_count = 0
         p = pyaudio.PyAudio()
@@ -273,6 +275,7 @@ class WindowsAudioBackend(AudioBackend):
                 loop_reader.start()
 
             log("Streams abertas com sucesso — captura iniciada")
+            _start_wall = _time.monotonic()
 
             def _drain(q: q_module.Queue, spec: _DeviceSpec, buf: Any) -> Any:
                 while True:
@@ -293,9 +296,14 @@ class WindowsAudioBackend(AudioBackend):
                         mic_buf = _drain(mic_q, mic_spec, mic_buf)
                     if loopback_spec is not None:
                         loop_buf = _drain(loop_q, loopback_spec, loop_buf)
+                        if len(loop_buf) > _MAX_LOOP_FRAMES:
+                            loop_buf = loop_buf[len(loop_buf) - _MAX_LOOP_FRAMES:]
 
                     any_encoded = False
                     while True:
+                        # G435 loopback entrega ~2x real-time em blocking mode; gate previne encoding acelerado
+                        if chunk_count >= int((_time.monotonic() - _start_wall) / _OUT_SECS) + 2:
+                            break
                         has_mic = mic_spec is not None
                         has_loop = loopback_spec is not None
                         mic_ready = has_mic and len(mic_buf) >= _OUT
