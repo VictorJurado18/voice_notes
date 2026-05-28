@@ -33,8 +33,8 @@ class RecorderApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Gravador de Audio")
-        self.geometry("680x560")
-        self.minsize(640, 520)
+        self.geometry("680x660")
+        self.minsize(640, 600)
         self.configure(bg="#f3f4f6")
 
         self._service: RecordingService | None = None
@@ -148,11 +148,33 @@ class RecorderApp(tk.Tk):
         )
         self.stop_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
 
-        # Botão Processar MP3 + seletor de idioma (modo manual)
-        process_row = tk.Frame(container, bg="#f3f4f6")
-        process_row.pack(fill=tk.X, pady=(4, 10))
+        # Pipeline: configurações + botão processar
+        pipeline_frame = ttk.LabelFrame(container, text="Pipeline", padding=12, style="Panel.TLabelframe")
+        pipeline_frame.pack(fill=tk.X, pady=(4, 10))
+
+        settings_row = tk.Frame(pipeline_frame, bg="#f3f4f6")
+        settings_row.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(settings_row, text="Idioma:", background="#f3f4f6", font=("Segoe UI", 10)).pack(side=tk.LEFT)
+        ttk.Combobox(
+            settings_row,
+            textvariable=self.pipeline_language,
+            values=_LANG_LABELS,
+            state="readonly",
+            width=14,
+            font=("Segoe UI", 10),
+        ).pack(side=tk.LEFT, padx=(4, 16))
+        ttk.Label(settings_row, text="Modelo:", background="#f3f4f6", font=("Segoe UI", 10)).pack(side=tk.LEFT)
+        ttk.Combobox(
+            settings_row,
+            textvariable=self.pipeline_model,
+            values=self._available_models,
+            state="readonly",
+            width=10,
+            font=("Segoe UI", 10),
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
         self.process_button = tk.Button(
-            process_row, text="Processar MP3 existente", command=self._process_existing_mp3,
+            pipeline_frame, text="Processar MP3 existente", command=self._process_existing_mp3,
             font=("Segoe UI", 10, "bold"),
             bg="#1e40af", fg="#ffffff",
             activebackground="#1d4ed8", activeforeground="#ffffff",
@@ -160,24 +182,6 @@ class RecorderApp(tk.Tk):
             relief=tk.FLAT, padx=12, pady=8,
         )
         self.process_button.pack(side=tk.LEFT)
-        ttk.Label(process_row, text="  Idioma:", background="#f3f4f6", font=("Segoe UI", 10)).pack(side=tk.LEFT)
-        ttk.Combobox(
-            process_row,
-            textvariable=self.pipeline_language,
-            values=_LANG_LABELS,
-            state="readonly",
-            width=14,
-            font=("Segoe UI", 10),
-        ).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Label(process_row, text="  Modelo:", background="#f3f4f6", font=("Segoe UI", 10)).pack(side=tk.LEFT)
-        ttk.Combobox(
-            process_row,
-            textvariable=self.pipeline_model,
-            values=self._available_models,
-            state="readonly",
-            width=10,
-            font=("Segoe UI", 10),
-        ).pack(side=tk.LEFT, padx=(4, 0))
 
         # Barra de progresso do pipeline
         self.progressbar = ttk.Progressbar(container, mode="indeterminate", length=640)
