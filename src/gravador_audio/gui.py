@@ -12,6 +12,11 @@ from gravador_audio.paths import default_output_dir
 from gravador_audio.recording import MIN_FREE_BYTES, RecordingConfig, RecordingService, RecordingState
 from gravador_audio.windows_audio_backend import WindowsAudioBackend, WindowsAudioBackendConfig
 
+def _log_hint() -> str:
+    from gravador_audio.log import _log_path
+    return f"Log completo em: {_log_path()}"
+
+
 _LANGUAGES = [
     ("Portugues (BR)", "pt"),
     ("Ingles", "en"),
@@ -44,6 +49,7 @@ class RecorderApp(tk.Tk):
         self.last_file = tk.StringVar(value="-")
         self.disk_warning = tk.StringVar(value="")
         self.pipeline_language = tk.StringVar(value=_LANG_LABELS[0])
+        self.device_info_text = tk.StringVar(value="")
 
         self._eq_smooth: list[float] = [0.0] * 16
         self._eq_peaks: list[float] = [0.0] * 16
@@ -81,8 +87,16 @@ class RecorderApp(tk.Tk):
         ttk.Label(status_row, textvariable=self.elapsed, style="Timer.TLabel").pack(side=tk.RIGHT)
 
         self._eq_canvas = tk.Canvas(container, height=56, bg="#111827", highlightthickness=0)
-        self._eq_canvas.pack(fill=tk.X, pady=(0, 8))
+        self._eq_canvas.pack(fill=tk.X, pady=(0, 4))
         self._eq_canvas.bind("<Configure>", lambda _: self._redraw_eq())
+
+        ttk.Label(
+            container,
+            textvariable=self.device_info_text,
+            font=("Segoe UI", 9),
+            foreground="#6b7280",
+            background="#f3f4f6",
+        ).pack(anchor=tk.W, pady=(0, 4))
 
         mode_frame = ttk.LabelFrame(container, text="Fonte de audio", padding=12, style="Panel.TLabelframe")
         mode_frame.pack(fill=tk.X, pady=8)
@@ -206,6 +220,7 @@ class RecorderApp(tk.Tk):
         self.start_button.configure(state=tk.DISABLED)
         self.stop_button.configure(state=tk.NORMAL)
         self.process_button.configure(state=tk.DISABLED)
+        self._update_device_info()
 
     def _stop_recording(self) -> None:
         if self._service is None or self._service.state != RecordingState.RECORDING:
@@ -226,17 +241,31 @@ class RecorderApp(tk.Tk):
 
     def _show_stop_error(self, message: str) -> None:
         self.status.set("Erro ao finalizar")
+        self.device_info_text.set("")
         self.start_button.configure(state=tk.NORMAL)
         self.stop_button.configure(state=tk.DISABLED)
         self.process_button.configure(state=tk.NORMAL)
-        messagebox.showerror("Erro ao finalizar", message)
+        messagebox.showerror("Erro ao finalizar", f"{message}\n\n{_log_hint()}")
 
     def _show_completed(self, output_path: Path) -> None:
         self.stop_button.configure(state=tk.DISABLED)
+        self.device_info_text.set("")
         self._started_at = None
         self._last_output = output_path
         self.last_file.set(str(output_path))
         self._start_pipeline(output_path, language="pt")
+
+    def _update_device_info(self) -> None:
+        if self._service is None:
+            self.device_info_text.set("")
+            return
+        info = self._service.device_info
+        parts: list[str] = []
+        if "microphone" in info:
+            parts.append(f"Mic: {info['microphone']}")
+        if "system" in info:
+            parts.append(f"Sistema: {info['system']}")
+        self.device_info_text.set("  |  ".join(parts) if parts else "")
 
     # ── Pipeline ──────────────────────────────────────────────────────────────
 
@@ -297,7 +326,7 @@ class RecorderApp(tk.Tk):
         self.status.set("Erro no pipeline")
         self.start_button.configure(state=tk.NORMAL)
         self.process_button.configure(state=tk.NORMAL)
-        messagebox.showerror("Erro no pipeline", message)
+        messagebox.showerror("Erro no pipeline", f"{message}\n\n{_log_hint()}")
 
     # ── Equalizador ───────────────────────────────────────────────────────────
 
@@ -384,8 +413,23 @@ class RecorderApp(tk.Tk):
             self.elapsed.set(f"{minutes:02d}:{remainder:02d}")
         else:
             self.elapsed.set("00:00")
+
+        self._check_backend_alive()
         self._check_disk_space()
         self.after(500, self._refresh_timer)
+
+    def _check_backend_alive(self) -> None:
+        if self._service is None or self._service.state != RecordingState.RECORDING:
+            return
+        if self._service.is_backend_alive:
+            return
+        # Thread morreu durante a gravação — acionar stop imediatamente
+        if self._stop_thread is not None and self._stop_thread.is_alive():
+            return  # stop já em andamento
+        self.stop_button.configure(state=tk.DISABLED)
+        self.status.set("Falha na captura...")
+        self._stop_thread = threading.Thread(target=self._stop_recording_worker, daemon=True)
+        self._stop_thread.start()
 
     def _check_disk_space(self) -> None:
         if self._service is None or self._service.state != RecordingState.RECORDING:

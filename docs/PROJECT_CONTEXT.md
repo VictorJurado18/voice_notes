@@ -29,16 +29,18 @@ Usuários no Windows precisam gravar chamadas, reuniões, podcasts ou qualquer c
 ## Stack principal
 
 - Linguagem: Python 3.12+
-- Backend de áudio: `soundcard` (captura microfone e loopback do speaker)
-- Encoder MP3: `lameenc` (encoder puro Python, sem binário externo)
-- Processamento de áudio: `numpy`
+- Captura de áudio: `pyaudiowpatch` (WASAPI loopback para Windows)
+- Encoder MP3: `lameenc` (puro Python, sem binário externo)
+- Mixagem e resampling: `numpy`
+- Transcrição: `faster-whisper` (local, modelo small)
+- Síntese: Claude API (`anthropic` SDK, claude-sonnet)
 - Interface gráfica: `tkinter` (incluso no Python padrão)
 - Interface CLI: `argparse`
 - Containerização: Não utilizada
-- IA/LLM: Não utilizada
-- APIs externas: Nenhuma
-- Cloud: Nenhuma
-- Observabilidade: Nenhuma
+- IA/LLM: Claude API (apenas para síntese do resumo pós-gravação)
+- APIs externas: Anthropic Claude API
+- Cloud: Nenhuma (transcrição é local)
+- Observabilidade: `gravador.log` na raiz do projeto
 
 ---
 
@@ -55,11 +57,16 @@ Usuários no Windows precisam gravar chamadas, reuniões, podcasts ou qualquer c
 
 ## Decisões já tomadas
 
-- Uso de `soundcard` para acesso ao loopback do speaker no Windows (WASAPI)
-- Uso de `lameenc` para evitar dependência de binários externos (ex: ffmpeg)
+- `pyaudiowpatch` para WASAPI com suporte a loopback (substituiu `soundcard` e `sounddevice`)
+- `lameenc` para evitar dependência de binários externos (ex: ffmpeg)
 - Arquitetura com backend abstrato (`AudioBackend`) para permitir troca futura de implementação
-- Separação de responsabilidades: `RecordingService` orquestra estado, `WindowsAudioBackend` faz a captura
-- Interface gráfica com `tkinter` para não adicionar dependências pesadas de UI
+- `RecordingService` orquestra estado; `WindowsAudioBackend` faz a captura em thread separada
+- Microfone via callback; loopback via thread blocking dedicada (contorna drivers wireless que não entregam silence em callback)
+- Acumuladores numpy independentes por fonte com chunk de saída fixo de 100 ms
+- `faster-whisper` local para transcrição (nenhum áudio enviado externamente)
+- Claude API para síntese do resumo estruturado pós-gravação
+- `tkinter` para GUI (sem dependências pesadas de UI)
+- Log persistente em `gravador.log` para diagnóstico de problemas de hardware
 - Projeto empacotado com `pyproject.toml` e instalado em `.venv` local
 
 ---
@@ -70,17 +77,18 @@ Usuários no Windows precisam gravar chamadas, reuniões, podcasts ou qualquer c
 - Gravação em outros formatos além de MP3
 - Upload ou compartilhamento de gravações
 - Edição de áudio
-- Transcrição automática
 - Agendamento de gravações
+- Interface web ou servidor
 
 ---
 
 ## Riscos conhecidos
 
-- `soundcard` pode não funcionar em todos os dispositivos de áudio Windows (depende de suporte WASAPI)
-- O loopback do speaker exige que o dispositivo de saída padrão suporte captura — nem todo hardware/driver suporta
-- Se microfone e loopback tiverem taxas de amostragem diferentes, a mixagem pode produzir artefatos
-- Gravações longas podem ocupar espaço em disco silenciosamente (sem alerta de espaço)
+- Drivers WASAPI de headsets wireless (G435) e monitores HDMI não entregam silence frames em modo callback — callbacks só disparam quando há áudio tocando
+- Diferentes dispositivos têm períodos nativos de buffer muito variáveis (480 a 242400 frames), exigindo acumuladores independentes
+- Loopback blocking pode bloquear indefinidamente se o driver não entregar frames mesmo sem áudio tocando
+- A síntese via Claude API requer `ANTHROPIC_API_KEY` válida e conexão com internet
+- Gravações longas podem ocupar disco — alerta em < 100 MB implementado
 
 ---
 

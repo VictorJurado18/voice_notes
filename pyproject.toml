@@ -5,7 +5,7 @@ description = "Aplicacao Windows para gravar audio local em MP3."
 requires-python = ">=3.12"
 dependencies = [
     "lameenc>=1.8.2",
-    "soundcard>=0.4.6",
+    "pyaudiowpatch>=0.2.12",
     "faster-whisper>=1.0",
 ]
 

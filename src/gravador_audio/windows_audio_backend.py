@@ -19,8 +19,16 @@ class WindowsAudioBackendConfig:
     capture_system_audio: bool = True
 
 
+@dataclass(frozen=True)
+class _DeviceSpec:
+    index: int
+    name: str
+    channels: int
+    rate: int
+
+
 class WindowsAudioBackend(AudioBackend):
-    """Records Windows microphone and speaker loopback audio to MP3."""
+    """Records Windows microphone and speaker loopback audio to MP3 via pyaudiowpatch."""
 
     _N_BANDS = 16
 
@@ -30,123 +38,289 @@ class WindowsAudioBackend(AudioBackend):
         self._thread: threading.Thread | None = None
         self._error: BaseException | None = None
         self._eq_levels: list[float] = [0.0] * self._N_BANDS
+        self._device_names: dict[str, str] = {}
 
     @property
     def eq_levels(self) -> list[float]:
         return self._eq_levels
 
+    @property
+    def device_names(self) -> dict[str, str]:
+        return dict(self._device_names)
+
+    @property
+    def is_thread_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def thread_error(self) -> str | None:
+        if self._error is None:
+            return None
+        exc = self._error
+        detail = str(exc).strip() or repr(exc)
+        return f"{type(exc).__name__}: {detail}"
+
     def start(self, output_path: Path) -> None:
+        from gravador_audio.log import log
         if self._thread is not None and self._thread.is_alive():
             raise RecordingError("Ja existe uma captura de audio em andamento.")
 
-        soundcard, lameenc, numpy = self._load_dependencies()
-        microphone, loopback = self._resolve_devices(soundcard)
+        lameenc, numpy = self._load_dependencies()
+        mic_spec, loopback_spec = self._resolve_devices()
+        log(f"Dispositivos resolvidos | {self._device_names}")
 
         self._stop_event.clear()
         self._error = None
         self._thread = threading.Thread(
             target=self._record_loop,
-            args=(output_path, soundcard, lameenc, numpy, microphone, loopback),
+            args=(output_path, lameenc, numpy, mic_spec, loopback_spec),
             name="windows-audio-recorder",
             daemon=True,
         )
         self._thread.start()
 
     def stop(self) -> None:
+        from gravador_audio.log import log
         if self._thread is None:
             return None
 
+        log("stop() chamado — aguardando thread finalizar")
         self._stop_event.set()
         self._thread.join()
         self._thread = None
 
         if self._error is not None:
-            raise RecordingError(f"Falha durante captura de audio: {self._error}")
+            exc = self._error
+            detail = str(exc).strip() or repr(exc)
+            raise RecordingError(f"Falha durante captura de audio: {type(exc).__name__}: {detail}")
 
         return None
 
-    def _load_dependencies(self) -> tuple[Any, Any, Any]:
+    def _load_dependencies(self) -> tuple[Any, Any]:
         try:
             import lameenc
             import numpy
-            import soundcard
         except ImportError as exc:
             raise AudioBackendUnavailableError(
-                "Dependencias de audio nao instaladas. Instale soundcard e lameenc."
+                "Dependencias de audio nao instaladas. Instale lameenc e numpy."
+            ) from exc
+        return lameenc, numpy
+
+    def _resolve_devices(self) -> tuple[_DeviceSpec | None, _DeviceSpec | None]:
+        try:
+            import pyaudiowpatch as pyaudio
+        except ImportError as exc:
+            raise AudioBackendUnavailableError(
+                "pyaudiowpatch nao instalado. Execute: pip install pyaudiowpatch"
             ) from exc
 
-        return soundcard, lameenc, numpy
+        from gravador_audio.log import log
 
-    def _resolve_devices(self, soundcard: Any) -> tuple[Any | None, Any | None]:
-        microphone = None
-        loopback = None
+        p = pyaudio.PyAudio()
+        names: dict[str, str] = {}
+        mic_spec: _DeviceSpec | None = None
+        loopback_spec: _DeviceSpec | None = None
 
-        if self._config.capture_microphone:
-            microphone = soundcard.default_microphone()
-            if microphone is None:
-                raise AudioBackendUnavailableError("Microfone padrao nao encontrado.")
+        try:
+            # WASAPI é usado para mic e loopback — garante taxa de amostragem correta
+            try:
+                wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+            except OSError as exc:
+                raise AudioBackendUnavailableError("WASAPI nao disponivel neste sistema.") from exc
 
-        if self._config.capture_system_audio:
-            speaker = soundcard.default_speaker()
-            if speaker is None:
-                raise AudioBackendUnavailableError("Dispositivo de saida padrao nao encontrado.")
-            loopback = soundcard.get_microphone(speaker.name, include_loopback=True)
-            if loopback is None:
-                raise AudioBackendUnavailableError(
-                    "Loopback do audio do sistema nao encontrado para o speaker padrao."
+            if self._config.capture_microphone:
+                mic_idx = wasapi_info["defaultInputDevice"]
+                if mic_idx < 0:
+                    raise AudioBackendUnavailableError("Microfone padrao WASAPI nao encontrado.")
+                info = p.get_device_info_by_index(mic_idx)
+                channels = min(self._config.channels, int(info["maxInputChannels"]))
+                rate = int(info["defaultSampleRate"])
+                mic_spec = _DeviceSpec(
+                    index=mic_idx,
+                    name=info["name"],
+                    channels=channels,
+                    rate=rate,
                 )
+                names["microphone"] = info["name"]
+                log(f"Microfone WASAPI: idx={mic_idx} '{info['name']}' ch={channels} rate={rate}")
 
-        if microphone is None and loopback is None:
+            if self._config.capture_system_audio:
+                default_out_idx = wasapi_info["defaultOutputDevice"]
+                default_out = p.get_device_info_by_index(default_out_idx)
+                out_name: str = default_out["name"]
+                log(f"Saida padrao WASAPI: idx={default_out_idx} '{out_name}'")
+
+                # Enumera dispositivos de loopback disponíveis
+                loopback_info = None
+                for lb in p.get_loopback_device_info_generator():
+                    log(f"  loopback disponivel: idx={lb['index']} '{lb['name']}'")
+                    if loopback_info is None or out_name.lower() in lb["name"].lower():
+                        loopback_info = lb
+
+                if loopback_info is None:
+                    raise AudioBackendUnavailableError(
+                        "Nenhum dispositivo de loopback WASAPI encontrado. "
+                        "Verifique se o driver do seu dispositivo de audio suporta loopback."
+                    )
+
+                channels = min(self._config.channels, int(loopback_info["maxInputChannels"]))
+                rate = int(loopback_info["defaultSampleRate"])
+                loopback_spec = _DeviceSpec(
+                    index=int(loopback_info["index"]),
+                    name=loopback_info["name"],
+                    channels=channels,
+                    rate=rate,
+                )
+                names["system"] = out_name
+                log(f"Loopback escolhido: idx={loopback_spec.index} '{loopback_spec.name}' ch={channels} rate={rate}")
+
+        finally:
+            p.terminate()
+
+        if mic_spec is None and loopback_spec is None:
             raise AudioBackendUnavailableError("Nenhuma fonte de audio habilitada.")
 
-        return microphone, loopback
+        self._device_names = names
+        return mic_spec, loopback_spec
 
     def _record_loop(
         self,
         output_path: Path,
-        soundcard: Any,
         lameenc: Any,
         numpy: Any,
-        microphone: Any | None,
-        loopback: Any | None,
+        mic_spec: _DeviceSpec | None,
+        loopback_spec: _DeviceSpec | None,
     ) -> None:
-        del soundcard
-        chunk_frames = max(1, int(self._config.sample_rate * self._config.chunk_seconds))
+        import queue as q_module
+
+        try:
+            import pyaudiowpatch as pyaudio
+        except ImportError as exc:
+            self._error = exc
+            return
+
+        from gravador_audio.log import log, log_exception
+
         encoder = self._build_encoder(lameenc)
+        log(
+            f"Thread iniciada | saida={output_path.name} "
+            f"mic={'sim' if mic_spec else 'nao'} "
+            f"loopback={'sim' if loopback_spec else 'nao'}"
+        )
+
+        import time as _time
+
+        # Output chunk size: 100 ms at target sample rate.
+        # Mic callback delivers ~10 ms chunks; loopback blocking-thread delivers
+        # exactly this size → accumulators stay balanced.
+        _OUT = int(self._config.sample_rate * 0.1)
+
+        chunk_count = 0
+        p = pyaudio.PyAudio()
+        mic_stream = None
+        loop_stream = None
+        loop_reader: threading.Thread | None = None
+        mic_q: q_module.Queue = q_module.Queue()
+        loop_q: q_module.Queue = q_module.Queue()
+        mic_buf = numpy.zeros((0, self._config.channels), dtype=numpy.float32)
+        loop_buf = numpy.zeros((0, self._config.channels), dtype=numpy.float32)
 
         try:
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            with output_path.open("wb") as file:
-                mic_context = (
-                    microphone.recorder(
-                        samplerate=self._config.sample_rate,
-                        channels=self._config.channels,
-                        blocksize=chunk_frames,
-                    )
-                    if microphone is not None
-                    else None
-                )
-                loop_context = (
-                    loopback.recorder(
-                        samplerate=self._config.sample_rate,
-                        channels=self._config.channels,
-                        blocksize=chunk_frames,
-                    )
-                    if loopback is not None
-                    else None
-                )
 
-                with _optional_context(mic_context) as mic_recorder, _optional_context(
-                    loop_context
-                ) as loop_recorder:
+            # Mic: callback mode (driver delivers ~480-frame chunks at native rate)
+            if mic_spec is not None:
+                def _mic_cb(in_data, frame_count, time_info, status):
+                    mic_q.put(bytes(in_data))
+                    return (None, pyaudio.paContinue)
+
+                mic_stream = p.open(
+                    format=pyaudio.paFloat32,
+                    channels=mic_spec.channels,
+                    rate=mic_spec.rate,
+                    input=True,
+                    input_device_index=mic_spec.index,
+                    stream_callback=_mic_cb,
+                )
+                mic_stream.start_stream()
+
+            # Loopback: blocking mode in a dedicated thread.
+            # Callback mode for G435 wireless only fires when system audio is non-silent;
+            # blocking mode delivers silence frames at device rate, guaranteeing continuity.
+            if loopback_spec is not None:
+                _ring = int(loopback_spec.rate * 2)  # 2-second ring buffer prevents overflow
+                loop_stream = p.open(
+                    format=pyaudio.paFloat32,
+                    channels=loopback_spec.channels,
+                    rate=loopback_spec.rate,
+                    input=True,
+                    input_device_index=loopback_spec.index,
+                    frames_per_buffer=_ring,
+                )
+                log(f"Loopback blocking | ring={_ring} read_chunk={_OUT}")
+
+                def _loop_reader_fn() -> None:
                     while not self._stop_event.is_set():
-                        chunks = []
-                        if mic_recorder is not None:
-                            chunks.append(mic_recorder.record(numframes=chunk_frames))
-                        if loop_recorder is not None:
-                            chunks.append(loop_recorder.record(numframes=chunk_frames))
+                        try:
+                            data = loop_stream.read(_OUT, exception_on_overflow=False)
+                            loop_q.put(bytes(data))
+                        except OSError:
+                            break
 
-                        mixed = self._mix_chunks(numpy, chunks)
+                loop_reader = threading.Thread(
+                    target=_loop_reader_fn, name="loopback-reader", daemon=True
+                )
+                loop_reader.start()
+
+            log("Streams abertas com sucesso — captura iniciada")
+
+            def _drain(q: q_module.Queue, spec: _DeviceSpec, buf: Any) -> Any:
+                while True:
+                    try:
+                        raw = q.get_nowait()
+                        part = numpy.frombuffer(raw, dtype=numpy.float32).reshape(-1, spec.channels)
+                        if spec.rate != self._config.sample_rate:
+                            part = self._resample(numpy, part, spec.rate, self._config.sample_rate)
+                        part = self._ensure_channels(numpy, part)
+                        buf = numpy.concatenate([buf, part], axis=0) if len(buf) else part
+                    except q_module.Empty:
+                        break
+                return buf
+
+            with output_path.open("wb") as file:
+                while not self._stop_event.is_set():
+                    if mic_spec is not None:
+                        mic_buf = _drain(mic_q, mic_spec, mic_buf)
+                    if loopback_spec is not None:
+                        loop_buf = _drain(loop_q, loopback_spec, loop_buf)
+
+                    any_encoded = False
+                    while True:
+                        has_mic = mic_spec is not None
+                        has_loop = loopback_spec is not None
+                        mic_ready = has_mic and len(mic_buf) >= _OUT
+                        loop_ready = has_loop and len(loop_buf) >= _OUT
+
+                        # Advance when at least one active source has a full chunk.
+                        # The other source is padded with silence so neither blocks the other.
+                        if not (mic_ready or loop_ready):
+                            break
+
+                        pieces: list[Any] = []
+                        if has_mic:
+                            if mic_ready:
+                                pieces.append(mic_buf[:_OUT])
+                                mic_buf = mic_buf[_OUT:]
+                            else:
+                                pieces.append(numpy.zeros((_OUT, self._config.channels), dtype=numpy.float32))
+                        if has_loop:
+                            if loop_ready:
+                                pieces.append(loop_buf[:_OUT])
+                                loop_buf = loop_buf[_OUT:]
+                            else:
+                                pieces.append(numpy.zeros((_OUT, self._config.channels), dtype=numpy.float32))
+
+                        mixed = self._mix_chunks(numpy, pieces)
                         try:
                             self._update_eq_levels(numpy, mixed)
                         except Exception:
@@ -155,12 +329,50 @@ class WindowsAudioBackend(AudioBackend):
                         encoded = encoder.encode(pcm)
                         if encoded:
                             file.write(encoded)
+                        chunk_count += 1
+                        any_encoded = True
+                        if chunk_count == 1:
+                            log(f"Primeiro chunk ok | mic_buf_rem={len(mic_buf)} loop_buf_rem={len(loop_buf)} out={_OUT}")
 
-                remaining = encoder.flush()
-                if remaining:
-                    file.write(remaining)
-        except BaseException as exc:  # thread boundary: re-raise from stop()
+                    if not any_encoded:
+                        _time.sleep(0.005)
+
+                if chunk_count > 0:
+                    remaining = encoder.flush()
+                    if remaining:
+                        file.write(remaining)
+
+            log(f"Gravacao encerrada normalmente | chunks={chunk_count}")
+
+        except BaseException as exc:
+            log_exception(f"ERRO na thread de gravacao (chunk={chunk_count})", exc)
             self._error = exc
+        finally:
+            if mic_stream is not None:
+                mic_stream.stop_stream()
+                mic_stream.close()
+            # Close loop_stream first to unblock any pending read() in the reader thread
+            if loop_stream is not None:
+                loop_stream.close()
+            if loop_reader is not None:
+                loop_reader.join(timeout=2.0)
+            p.terminate()
+
+    # ── Utilidades ────────────────────────────────────────────────────────────
+
+    def _resample(self, numpy: Any, arr: Any, src_rate: int, dst_rate: int) -> Any:
+        if src_rate == dst_rate:
+            return arr
+        ratio = dst_rate / src_rate
+        n_out = max(1, int(arr.shape[0] * ratio))
+        x_src = numpy.linspace(0, arr.shape[0] - 1, arr.shape[0])
+        x_dst = numpy.linspace(0, arr.shape[0] - 1, n_out)
+        if arr.ndim == 1:
+            return numpy.interp(x_dst, x_src, arr).astype(numpy.float32)
+        return numpy.stack(
+            [numpy.interp(x_dst, x_src, arr[:, c]).astype(numpy.float32) for c in range(arr.shape[1])],
+            axis=1,
+        )
 
     def _update_eq_levels(self, numpy: Any, mixed: Any) -> None:
         mono = mixed[:, 0] if mixed.ndim == 2 else mixed
@@ -196,7 +408,6 @@ class WindowsAudioBackend(AudioBackend):
     def _mix_chunks(self, numpy: Any, chunks: list[Any]) -> Any:
         if not chunks:
             return numpy.zeros((0, self._config.channels), dtype=numpy.float32)
-
         normalized = [self._ensure_channels(numpy, chunk) for chunk in chunks]
         min_frames = min(chunk.shape[0] for chunk in normalized)
         aligned = [chunk[:min_frames] for chunk in normalized]
@@ -207,36 +418,17 @@ class WindowsAudioBackend(AudioBackend):
         array = numpy.asarray(chunk, dtype=numpy.float32)
         if array.ndim == 1:
             array = array.reshape((-1, 1))
-
-        current_channels = array.shape[1]
-        if current_channels == self._config.channels:
+        current = array.shape[1]
+        target = self._config.channels
+        if current == target:
             return array
-        if current_channels == 1 and self._config.channels == 2:
+        if current == 1 and target == 2:
             return numpy.repeat(array, 2, axis=1)
-        if current_channels > self._config.channels:
-            return array[:, : self._config.channels]
-
-        padding = numpy.zeros(
-            (array.shape[0], self._config.channels - current_channels),
-            dtype=numpy.float32,
-        )
+        if current > target:
+            return array[:, :target]
+        padding = numpy.zeros((array.shape[0], target - current), dtype=numpy.float32)
         return numpy.concatenate([array, padding], axis=1)
 
     def _float_to_pcm16(self, numpy: Any, chunk: Any) -> bytes:
         scaled = numpy.clip(chunk, -1.0, 1.0) * 32767
         return scaled.astype(numpy.int16).tobytes()
-
-
-class _optional_context:
-    def __init__(self, context: Any | None) -> None:
-        self._context = context
-
-    def __enter__(self) -> Any | None:
-        if self._context is None:
-            return None
-        return self._context.__enter__()
-
-    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> bool | None:
-        if self._context is None:
-            return None
-        return self._context.__exit__(exc_type, exc, traceback)

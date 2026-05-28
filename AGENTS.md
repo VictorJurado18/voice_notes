@@ -14,10 +14,11 @@ Antes de qualquer execução, leia nesta ordem:
 
 1. `AI_AGENT_RULES.md`
 2. `PROMPT.md`
-3. `docs/PROJECT_CONTEXT.md`
-4. `docs/STRUCTURE.md`
-5. `docs/CURRENT_STATE.md`
-6. A spec ativa em `docs/specs/<nome-da-feature>/`
+3. `OBJECTIVES.md` — objetivos funcionais e de qualidade com status atual
+4. `docs/PROJECT_CONTEXT.md`
+5. `docs/STRUCTURE.md`
+6. `docs/CURRENT_STATE.md`
+7. A spec ativa em `docs/specs/<nome-da-feature>/`
 
 Dentro da spec ativa, leia:
 
@@ -76,7 +77,6 @@ Para cada tarefa relevante:
 - Não expor segredos.
 - Não executar comandos destrutivos.
 - Não apagar arquivos sem autorização.
-- Não modificar banco de dados sem autorização explícita.
 - Não instalar dependências sem justificar.
 - Não alterar arquitetura sem explicar impacto.
 - Não começar codando sem plano.
@@ -104,13 +104,13 @@ Priorize:
 Evite:
 
 - hardcode desnecessário;
-- lógica de negócio dentro de rotas;
+- lógica de domínio misturada à camada de apresentação (GUI/CLI);
 - alteração ampla sem necessidade;
 - refatoração fora do escopo;
 - solução feita apenas para passar em um caso específico;
 - duplicação de regra espalhada no projeto;
-- acoplamento entre coleta, validação e persistência;
-- persistir dados antes de validar.
+- acoplamento entre captura de áudio, mixagem e codificação;
+- escrever arquivo MP3 antes de validar que há dados a encodar.
 
 ---
 
@@ -148,16 +148,9 @@ git add
 git commit
 git push
 git checkout -b
-alembic revision
-alembic upgrade
-alembic downgrade
-docker compose up
-docker compose up -d
-docker compose build
 pip install
 poetry add
 uv add
-npm install
 ```
 
 ---
@@ -173,9 +166,6 @@ git clean -fdx
 git push --force
 git push --force-with-lease
 rm -rf
-docker compose down -v
-docker volume prune
-docker system prune -a --volumes
 ```
 
 ---

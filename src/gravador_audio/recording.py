@@ -59,6 +59,27 @@ class RecordingService:
             return self._backend.eq_levels
         return [0.0] * 16
 
+    @property
+    def device_info(self) -> dict[str, str]:
+        from gravador_audio.windows_audio_backend import WindowsAudioBackend
+        if isinstance(self._backend, WindowsAudioBackend):
+            return self._backend.device_names
+        return {}
+
+    @property
+    def thread_error(self) -> str | None:
+        from gravador_audio.windows_audio_backend import WindowsAudioBackend
+        if isinstance(self._backend, WindowsAudioBackend):
+            return self._backend.thread_error
+        return None
+
+    @property
+    def is_backend_alive(self) -> bool:
+        from gravador_audio.windows_audio_backend import WindowsAudioBackend
+        if isinstance(self._backend, WindowsAudioBackend):
+            return self._backend.is_thread_alive
+        return True
+
     def start(self) -> Path:
         if self._state == RecordingState.RECORDING:
             raise InvalidRecordingStateError("Ja existe uma gravacao em andamento.")

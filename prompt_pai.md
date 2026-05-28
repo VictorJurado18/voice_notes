@@ -1,3 +1,10 @@
+> **ATENÇÃO — Este prompt é histórico.**
+> A estrutura documental descrita abaixo **já foi criada e está preenchida** neste repositório.
+> Não re-execute as instruções de inicialização.
+> Use os documentos existentes como fonte de verdade e siga o fluxo normal de desenvolvimento.
+
+---
+
 Você vai preparar este repositório para um fluxo de Spec-Driven Development orientado por agentes de IA.
 
 Atenção:
@@ -19,20 +26,76 @@ IDEIA DO PROJETO
 Cole aqui a descrição completa da ideia do projeto:
 
 """
-[COLE AQUI A IDEIA DO PROJETO]
+Aplicação desktop para Windows chamada gravador_audio.
 
-Inclua, se souber:
-- objetivo do projeto;
-- problema que resolve;
-- público-alvo;
-- stack desejada;
-- funcionalidades principais;
-- regras de negócio;
-- restrições;
-- integrações externas;
-- riscos;
-- o que está fora de escopo;
-- primeira feature que deve ser planejada.
+Objetivo: gravar chamadas e reuniões em MP3 capturando microfone e áudio do sistema
+(loopback WASAPI) simultaneamente, com transcrição automática local e síntese via
+Claude API após a gravação.
+
+Problema que resolve: usuários Windows precisam gravar chamadas com ambas as vozes
+(local + remota) sem ferramentas pagas, e querem um resumo estruturado automático
+sem precisar transcrever manualmente.
+
+Público-alvo:
+- Profissionais que participam de reuniões e chamadas frequentes
+- Criadores de conteúdo que gravam microfone + áudio do sistema juntos
+- Usuários técnicos que preferem linha de comando
+
+Stack:
+- Linguagem: Python 3.12+
+- Captura de áudio: pyaudiowpatch (WASAPI loopback para G435 e outros headsets wireless)
+- Encoder MP3: lameenc (puro Python, sem binário externo)
+- Mixagem: numpy
+- Transcrição: faster-whisper (local, modelo small)
+- Síntese: Claude API (claude-sonnet) via anthropic SDK
+- Interface gráfica: tkinter (incluso no Python)
+- Interface CLI: argparse
+
+Funcionalidades principais:
+1. Gravar microfone + áudio do sistema em MP3 com mixagem por média
+2. Interface gráfica com EQ visualizer, feedback de dispositivos ativos, iniciar/parar
+3. Interface CLI para automação (duração fixa, modo de captura)
+4. Pipeline pós-gravação: transcrição (faster-whisper) → síntese (Claude) → arquivos .md
+5. Botão "Processar MP3 existente" na GUI para rodar pipeline em gravações antigas
+6. Alerta quando espaço em disco < 100 MB durante gravação
+7. Log persistente em gravador.log na raiz do projeto para diagnóstico
+
+Regras de negócio:
+- Arquivo salvo em ~/Music/gravador_audio/gravacao-YYYYMMDD-HHMMSS.mp3 por padrão
+- Timestamp no nome do arquivo evita colisão
+- Três modos: microfone + sistema, somente microfone, somente sistema
+- Áudio mixado por média e limitado a [-1.0, 1.0]
+- Pasta de saída criada automaticamente se não existir
+- Pipeline gera: transcricao.md (com timestamps) + resumo.md (Contexto/Decisões/Plano)
+- Pasta da gravação nomeada automaticamente com base no conteúdo identificado pelo Claude
+
+Restrições:
+- Somente Windows (WASAPI)
+- Sem suporte a macOS ou Linux
+- Sem banco de dados
+- Sem servidor web
+- Nenhum áudio enviado a serviços externos (transcrição é local)
+
+Integrações externas:
+- Claude API (anthropic SDK) para síntese do conteúdo — requer ANTHROPIC_API_KEY
+
+Riscos:
+- Drivers WASAPI de headsets wireless (G435) e monitores (HDMI audio) têm comportamento
+  não-padrão para loopback: callbacks só disparam quando há áudio tocando, não entregam
+  silence frames
+- Diferentes dispositivos têm períodos nativos de buffer muito diferentes (480 a 242400 frames)
+- Gravações longas podem ocupar disco sem alerta (mitigado pelo alerta de 100 MB)
+
+Fora de escopo:
+- Suporte a outros SOs
+- Gravação em formato WAV, OGG ou qualquer formato além de MP3
+- Upload ou compartilhamento de gravações
+- Edição de áudio
+- Agendamento de gravações
+- Interface web
+
+Primeira feature planejada: confiabilidade do gravador de áudio (captura correta com
+quaisquer dispositivos Windows WASAPI, incluindo headsets wireless e monitores HDMI).
 """
 
 ============================================================

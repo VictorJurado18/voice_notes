@@ -1,10 +1,15 @@
 # STRUCTURE.md
 
+> **Fonte de verdade**: [`docs/STRUCTURE.md`](docs/STRUCTURE.md)
+> Este arquivo é uma cópia de conveniência na raiz. Em caso de divergência, o arquivo em `docs/` prevalece.
+
+---
+
 ## Objetivo
 
-Este documento descreve a estrutura do repositório e onde cada responsabilidade deve viver.
+Este documento descreve a estrutura real do repositório e onde cada responsabilidade vive.
 
-Atualize este arquivo apenas quando houver mudança relevante na arquitetura, pastas, módulos, responsabilidades ou fluxo técnico.
+Atualize apenas quando houver mudança relevante na arquitetura, pastas, módulos ou fluxo técnico.
 
 ---
 
@@ -12,155 +17,165 @@ Atualize este arquivo apenas quando houver mudança relevante na arquitetura, pa
 
 ```text
 /
-├── app/
-│   ├── api/
-│   ├── core/
-│   ├── db/
-│   ├── models/
-│   ├── schemas/
-│   ├── services/
-│   └── main.py
-├── alembic/
+├── src/
+│   └── gravador_audio/
+│       ├── __init__.py
+│       ├── audio_backend.py        — interface abstrata AudioBackend
+│       ├── cli.py                  — entrypoint CLI
+│       ├── errors.py               — hierarquia de erros do domínio
+│       ├── gui.py                  — interface gráfica tkinter
+│       ├── log.py                  — log persistente em gravador.log
+│       ├── paths.py                — pasta padrão de saída
+│       ├── pipeline.py             — pipeline pós-gravação (transcrição + síntese)
+│       ├── recording.py            — RecordingService (orquestrador de estado)
+│       ├── synthesis.py            — síntese via Claude API
+│       ├── transcription.py        — transcrição via faster-whisper
+│       └── windows_audio_backend.py — captura WASAPI (mic callback + loopback blocking)
 ├── tests/
+│   ├── test_paths.py
+│   ├── test_recording_service.py
+│   └── test_windows_audio_backend.py
+├── scripts/
+│   └── install_windows.ps1
 ├── docs/
-├── docker-compose.yml
-├── Dockerfile
+│   ├── PROJECT_CONTEXT.md
+│   ├── STRUCTURE.md
+│   ├── CURRENT_STATE.md
+│   └── specs/
+│       ├── _template/
+│       │   ├── PRD.md
+│       │   ├── PROPOSAL.md
+│       │   ├── PLAN.md
+│       │   ├── PROGRESS.md
+│       │   └── TEST.md
+│       ├── 0001-disk-space-alert/
+│       └── 0002-post-recording-pipeline/
+├── gravacoes/                      — saída padrão das gravações (git-ignorado)
+├── gravador.log                    — log de diagnóstico de execução
+├── AI_AGENT_RULES.md
+├── AGENTS.md
+├── CLAUDE.md
+├── OBJECTIVES.md
+├── PROJECT_CONTEXT.md
+├── PROMPT.md
+├── prompt_pai.md
 ├── pyproject.toml
-├── requirements.txt
-└── README.md
+├── README.md
+├── STRUCTURE.md
+├── Instalar.bat
+├── Gravar.bat
+└── Abrir Gravador.vbs
 ```
 
 ---
 
-## Responsabilidades por pasta
+## Responsabilidades por arquivo
 
 | Caminho | Responsabilidade |
 |---|---|
-| `app/` | Código principal da aplicação |
-| `app/main.py` | Ponto de entrada da aplicação |
-| `app/api/` | Rotas/endpoints da API |
-| `app/core/` | Configurações centrais, settings e utilitários base |
-| `app/db/` | Conexão com banco, sessão e base ORM |
-| `app/models/` | Models SQLAlchemy |
-| `app/schemas/` | Schemas Pydantic |
-| `app/services/` | Regras de negócio |
-| `app/repositories/` | Acesso a dados, se existir |
-| `app/adapters/` | Integrações externas, se existir |
-| `app/strategies/` | Estratégias específicas por fonte/site, se existir |
-| `alembic/` | Migrations do banco |
-| `tests/` | Testes automatizados |
-| `docs/` | Documentação técnica e specs |
-| `docs/specs/` | Especificações por feature/tarefa |
+| `src/gravador_audio/audio_backend.py` | Interface abstrata `AudioBackend` + `UnavailableAudioBackend` (stub) |
+| `src/gravador_audio/windows_audio_backend.py` | Captura WASAPI: mic via callback, loopback via thread blocking + acumuladores independentes |
+| `src/gravador_audio/recording.py` | `RecordingService` — máquina de estados (`IDLE → RECORDING → FINALIZING → COMPLETED → ERROR`) |
+| `src/gravador_audio/pipeline.py` | Orquestra pipeline pós-gravação: transcrição → síntese → salva arquivos |
+| `src/gravador_audio/transcription.py` | Chama `faster-whisper` localmente, retorna texto com timestamps |
+| `src/gravador_audio/synthesis.py` | Chama Claude API para gerar resumo estruturado |
+| `src/gravador_audio/cli.py` | Entrypoint CLI via `argparse` — gravação por duração fixa |
+| `src/gravador_audio/gui.py` | Interface `tkinter` — iniciar/parar, EQ visualizer, feedback de dispositivos e erros |
+| `src/gravador_audio/log.py` | `log()` e `log_exception()` — escreve em `gravador.log` na raiz |
+| `src/gravador_audio/paths.py` | Retorna pasta padrão de saída (`~/Music/gravador_audio`) |
+| `src/gravador_audio/errors.py` | `RecordingError`, `AudioBackendUnavailableError`, etc. |
+| `tests/` | Testes unitários com `unittest` |
+| `scripts/install_windows.ps1` | Cria `.venv` e instala dependências via pip |
+| `gravador.log` | Log de diagnóstico gerado em runtime (não versionado) |
+| `OBJECTIVES.md` | Objetivos funcionais e de qualidade do projeto, com status atual |
 
 ---
 
 ## Padrão de camadas
 
-Fluxo preferencial:
+```text
+gui.py / cli.py
+    └── RecordingService (recording.py)
+            └── WindowsAudioBackend (windows_audio_backend.py)
+                    ├── pyaudiowpatch  (captura WASAPI — mic e loopback)
+                    ├── numpy          (mixagem e resampling)
+                    └── lameenc        (encode MP3 incremental)
+
+    └── pipeline.py
+            ├── transcription.py  →  faster-whisper  (local)
+            └── synthesis.py      →  Claude API       (anthropic SDK)
+```
+
+---
+
+## Fluxo de gravação
+
+1. Usuário escolhe modo e pasta → `RecordingService.start()` → `WindowsAudioBackend.start(path)`
+2. Backend abre streams: mic em callback, loopback em blocking thread separada
+3. Loop principal drena ambas as filas com `get_nowait()`, acumula em buffers numpy independentes
+4. A cada 100 ms de dados disponíveis: mixagem → encode MP3 → escrita incremental no arquivo
+5. `stop()` → sinaliza evento → loop encerra → flush do encoder → arquivo fechado
+
+---
+
+## Hierarquia de erros
 
 ```text
-route -> schema -> service -> repository/db -> model
-```
-
-Para coleta/validação externa:
-
-```text
-search/fetch adapter -> parser -> validator -> service -> persistence
+RecordingError
+├── InvalidRecordingStateError   (ex: stop() sem gravação ativa)
+├── AudioBackendUnavailableError (ex: dispositivo WASAPI não encontrado)
+└── OutputPathError              (ex: pasta inválida)
 ```
 
 ---
 
-## Regras arquiteturais
+## Comandos reais
 
-- Rotas não devem concentrar regra de negócio complexa.
-- Services devem conter regras de negócio.
-- Models representam persistência.
-- Schemas representam entrada/saída da API.
-- Adapters lidam com integrações externas.
-- Strategies isolam comportamento específico por site/fonte.
-- Validações críticas devem ser explícitas.
-- Persistência deve acontecer apenas depois da validação.
-- Não criar hardcode de produto/site no service principal.
-- Não alterar arquitetura sem plano.
-- Não criar nova camada sem justificativa.
+### Instalar
 
----
-
-## Banco de dados
-
-- Models ficam em `app/models/`.
-- Migrations ficam em `alembic/versions/`.
-- Não editar migrations antigas sem aprovação.
-- Não rodar migrations sem revisar impacto.
-- Não alterar schema fora do fluxo de migration.
-
----
-
-## Testes
-
-Testes devem ficar em `tests/`.
-
-Padrões esperados:
-
-```text
-tests/
-├── unit/
-├── integration/
-└── e2e/
+```powershell
+powershell -File scripts\install_windows.ps1
+# ou duplo clique em Instalar.bat
 ```
 
-Quando a estrutura real for diferente, documentar aqui.
+### Interface gráfica
 
----
-
-## Documentação de specs
-
-Cada feature relevante deve ter sua própria pasta:
-
-```text
-docs/specs/0001-nome-da-feature/
-├── PRD.md
-├── PROPOSAL.md
-├── PLAN.md
-├── PROGRESS.md
-└── TEST.md
+```powershell
+$env:PYTHONPATH="src"; .\.venv\Scripts\python.exe -m gravador_audio.gui
+# ou duplo clique em "Abrir Gravador.vbs"
 ```
 
----
+### CLI — gravação
 
-## Comandos comuns
-
-### Rodar aplicação
-
-```bash
-<preencher comando>
+```powershell
+$env:PYTHONPATH="src"; .\.venv\Scripts\python.exe -m gravador_audio.cli gravar --duration 20
+$env:PYTHONPATH="src"; .\.venv\Scripts\python.exe -m gravador_audio.cli gravar --duration 20 --microphone-only
+$env:PYTHONPATH="src"; .\.venv\Scripts\python.exe -m gravador_audio.cli gravar --duration 20 --system-only
 ```
 
-### Rodar testes
+### CLI — processar MP3 existente
 
-```bash
-<preencher comando>
+```powershell
+$env:PYTHONPATH="src"; .\.venv\Scripts\python.exe -m gravador_audio.cli processar caminho\para\arquivo.mp3
 ```
 
-### Rodar migrations
+### Testes
 
-```bash
-<preencher comando>
+```powershell
+$env:PYTHONPATH="src"; .\.venv\Scripts\python.exe -m unittest discover -s tests
 ```
 
-### Rodar lint/format
+### Lint/format
 
-```bash
-<preencher comando>
-```
+Não identificado no repositório.
 
 ---
 
 ## Pontos de atenção
 
-- Não alterar `.env`.
-- Não expor segredos.
-- Não commitar arquivos sensíveis.
-- Não rodar comando destrutivo.
-- Não modificar banco sem aprovação.
-- Não quebrar funcionalidade existente.
+- `PYTHONPATH=src` é obrigatório para rodar sem instalar o pacote.
+- `pyaudiowpatch` depende do WASAPI do Windows — não funciona em outros SOs.
+- A thread de gravação é daemon (`daemon=True`); erros são capturados e relançados em `stop()`.
+- `gravador.log` é o primeiro lugar a verificar quando algo não funciona.
+- Síntese requer `ANTHROPIC_API_KEY` — não expor nem commitar.
+- Não alterar `.env` (não existe, mas não criar).

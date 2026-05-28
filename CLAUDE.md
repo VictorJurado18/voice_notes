@@ -14,10 +14,11 @@ Antes de qualquer execução, leia nesta ordem:
 
 1. `AI_AGENT_RULES.md`
 2. `PROMPT.md`
-3. `docs/PROJECT_CONTEXT.md`
-4. `docs/STRUCTURE.md`
-5. `docs/CURRENT_STATE.md`
-6. A spec ativa em `docs/specs/<nome-da-feature>/`
+3. `OBJECTIVES.md`
+4. `docs/PROJECT_CONTEXT.md`
+5. `docs/STRUCTURE.md`
+6. `docs/CURRENT_STATE.md`
+7. A spec ativa em `docs/specs/<nome-da-feature>/`
 
 Dentro da spec ativa, leia:
 
