@@ -223,21 +223,32 @@ class RecorderApp(tk.Tk):
         self._update_device_info()
 
     def _stop_recording(self) -> None:
+        from gravador_audio.log import log
         if self._service is None or self._service.state != RecordingState.RECORDING:
+            log("GUI: _stop_recording ignorado (service None ou nao gravando)")
             return
+        log("GUI: _stop_recording chamado — iniciando worker thread")
         self.stop_button.configure(state=tk.DISABLED)
         self.status.set("Finalizando...")
         self._stop_thread = threading.Thread(target=self._stop_recording_worker, daemon=True)
         self._stop_thread.start()
 
     def _stop_recording_worker(self) -> None:
+        from gravador_audio.log import log
+        log("GUI: _stop_recording_worker iniciado")
         assert self._service is not None
         try:
             output_path = self._service.stop()
         except RecordingError as exc:
+            log(f"GUI: service.stop() lancou RecordingError: {exc}")
             self.after(0, self._show_stop_error, str(exc))
             return
+        except Exception as exc:
+            log(f"GUI: service.stop() lancou excecao inesperada: {type(exc).__name__}: {exc}")
+            return
+        log(f"GUI: service.stop() OK -> {output_path.name}")
         self.after(0, self._show_completed, output_path)
+        log("GUI: after(_show_completed) agendado")
 
     def _show_stop_error(self, message: str) -> None:
         self.status.set("Erro ao finalizar")
@@ -248,6 +259,8 @@ class RecorderApp(tk.Tk):
         messagebox.showerror("Erro ao finalizar", f"{message}\n\n{_log_hint()}")
 
     def _show_completed(self, output_path: Path) -> None:
+        from gravador_audio.log import log
+        log(f"GUI: _show_completed chamado -> {output_path.name}")
         self.stop_button.configure(state=tk.DISABLED)
         self.device_info_text.set("")
         self._started_at = None
@@ -255,6 +268,7 @@ class RecorderApp(tk.Tk):
         self.last_file.set(str(output_path))
         lang_label = self.pipeline_language.get()
         lang_code = _LANG_CODES.get(lang_label, "pt")
+        log(f"GUI: iniciando pipeline | arquivo={output_path.name} lang={lang_code}")
         self.status.set("Iniciando pipeline...")
         self._start_pipeline(output_path, language=lang_code)
 
@@ -291,33 +305,53 @@ class RecorderApp(tk.Tk):
         self._start_pipeline(mp3_path, language=lang_code)
 
     def _start_pipeline(self, mp3_path: Path, language: str | None) -> None:
-        self.progressbar.start(12)
+        from gravador_audio.log import log, log_exception
+        log(f"GUI: _start_pipeline | arquivo={mp3_path.name} lang={language}")
+        try:
+            self.progressbar.start(12)
+            log("GUI: progressbar iniciada")
 
-        def on_status(msg: str) -> None:
-            self.after(0, self.status.set, msg)
+            def on_status(msg: str) -> None:
+                from gravador_audio.log import log
+                log(f"GUI: pipeline status -> {msg}")
+                self.after(0, self.status.set, msg)
 
-        self._pipeline_thread = threading.Thread(
-            target=self._pipeline_worker,
-            args=(mp3_path, language or "pt", on_status),
-            daemon=True,
-        )
-        self._pipeline_thread.start()
+            self._pipeline_thread = threading.Thread(
+                target=self._pipeline_worker,
+                args=(mp3_path, language or "pt", on_status),
+                daemon=True,
+            )
+            self._pipeline_thread.start()
+            log("GUI: pipeline thread iniciada")
+        except Exception as exc:
+            log_exception("GUI: ERRO em _start_pipeline", exc)
+            self.start_button.configure(state=tk.NORMAL)
+            self.process_button.configure(state=tk.NORMAL)
+            self.status.set("Erro ao iniciar pipeline")
+            messagebox.showerror("Erro ao iniciar pipeline", f"{exc}\n\n{_log_hint()}")
 
     def _pipeline_worker(self, mp3_path: Path, language: str, on_status: object) -> None:
+        from gravador_audio.log import log
+        log(f"GUI: _pipeline_worker iniciado | {mp3_path.name}")
         from gravador_audio.pipeline import run
         try:
             result = run(mp3_path, mp3_path.parent, language=language, on_status=on_status)
         except TranscriptionError as exc:
+            log(f"GUI: TranscriptionError no pipeline: {exc}")
             self.after(0, self._on_pipeline_error, str(exc))
             return
         except Exception as exc:
+            log(f"GUI: excecao no pipeline: {type(exc).__name__}: {exc}")
             self.after(0, self._on_pipeline_error, str(exc))
             return
+        log(f"GUI: pipeline concluido -> {result.folder.name}")
         self.after(0, self._on_pipeline_done, result)
 
     def _on_pipeline_done(self, result: object) -> None:
+        from gravador_audio.log import log
         from gravador_audio.pipeline import PipelineResult
         assert isinstance(result, PipelineResult)
+        log(f"GUI: _on_pipeline_done | pasta={result.folder.name}")
         self.progressbar.stop()
         self.status.set(f"Pronto: {result.folder.name}")
         self.last_file.set(str(result.folder))
@@ -325,6 +359,8 @@ class RecorderApp(tk.Tk):
         self.process_button.configure(state=tk.NORMAL)
 
     def _on_pipeline_error(self, message: str) -> None:
+        from gravador_audio.log import log
+        log(f"GUI: _on_pipeline_error | {message[:120]}")
         self.progressbar.stop()
         self.status.set("Erro no pipeline")
         self.start_button.configure(state=tk.NORMAL)
@@ -451,18 +487,23 @@ class RecorderApp(tk.Tk):
             self.disk_warning.set("")
 
     def _on_close(self) -> None:
+        from gravador_audio.log import log
+        state = self._service.state if self._service is not None else "sem_service"
+        log(f"GUI: _on_close chamado | state={state}")
         if self._service is not None and self._service.state == RecordingState.RECORDING:
             should_close = messagebox.askyesno(
                 "Gravacao em andamento",
                 "Existe uma gravacao em andamento. Deseja parar e fechar?",
             )
             if not should_close:
+                log("GUI: _on_close cancelado pelo usuario")
                 return
             try:
                 self._service.stop()
             except RecordingError as exc:
                 messagebox.showerror("Erro ao finalizar", str(exc))
                 return
+        log("GUI: destroy() chamado")
         self.destroy()
 
 

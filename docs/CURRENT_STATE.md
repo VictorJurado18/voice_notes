@@ -10,7 +10,7 @@ Use para retomada de contexto entre sessões, agentes e conversas.
 
 ## Status geral
 
-Em desenvolvimento ativo — confiabilidade do gravador de áudio em correção
+Em desenvolvimento ativo — captura de áudio validada; bug no pipeline pós-gravação via GUI
 
 ---
 
@@ -22,7 +22,7 @@ Em desenvolvimento ativo — confiabilidade do gravador de áudio em correção
 
 ## Resumo atual
 
-O pipeline de transcrição e síntese está implementado e funcional. A interface gráfica e a CLI estão prontas. O problema ativo é a confiabilidade da gravação de áudio: drivers WASAPI de headsets wireless (G435) e monitores HDMI têm comportamento não-padrão — callbacks de loopback só disparam quando há áudio do sistema tocando, não entregam silence frames. A correção atual usa modo blocking em thread separada para loopback + acumuladores independentes por fonte com chunk de saída fixo (100 ms).
+A captura de áudio foi validada: gravação de 20s com G435 Wireless produziu chunks=202 e MP3 de duração completa (CT-01 ✅). O pipeline de transcrição e síntese está implementado. Novo problema ativo: ao clicar em "Parar gravação" na GUI, a aplicação fecha em vez de disparar automaticamente o pipeline (transcrição → síntese → pasta nomeada). O fluxo de "Processar MP3 existente" não foi afetado.
 
 ---
 
@@ -51,9 +51,9 @@ O pipeline de transcrição e síntese está implementado e funcional. A interfa
 
 ## Funcionalidades em andamento
 
-- [ ] **Confiabilidade do gravador de áudio** — captura correta com quaisquer dispositivos WASAPI
-  - Problema: loopback de G435 wireless e LG ULTRAGEAR HDMI só dispara callback quando há áudio tocando
-  - Correção em teste: loopback em thread blocking + acumuladores independentes por fonte
+- [ ] **Pipeline pós-gravação via GUI** — ao parar a gravação, a GUI fecha em vez de executar transcrição + síntese + pasta
+  - CT-01 confirmou que a captura está correta (chunks=202, MP3 completo)
+  - O bug é no fluxo de retorno do `_stop_recording_worker` → `_show_completed` → `_start_pipeline`
 
 ---
 
@@ -80,8 +80,9 @@ O pipeline de transcrição e síntese está implementado e funcional. A interfa
 
 ## Riscos atuais
 
-- Loopback blocking pode bloquear indefinidamente se driver não entregar frames mesmo sem áudio — thread fica presa em `read()`; `stop()` fecha o stream para desbloquear
-- G435 e LG ULTRAGEAR têm comportamentos distintos; outros dispositivos podem apresentar variações não testadas
+- **Bug ativo**: GUI fecha ao parar gravação em vez de executar pipeline — causa ainda não identificada
+- Loopback blocking pode bloquear indefinidamente se driver não entregar frames — `stop()` fecha o stream para desbloquear
+- CT-02 (mic + sistema) ainda não executado; comportamento com áudio do sistema tocando não validado
 - `ANTHROPIC_API_KEY` ausente ou inválida interrompe o pipeline (síntese falha, transcrição fica salva)
 - GUI e CLI não têm testes automatizados
 
@@ -89,7 +90,8 @@ O pipeline de transcrição e síntese está implementado e funcional. A interfa
 
 ## Pendências
 
-- Confirmar que gravação funciona com audio do sistema tocando (cenário real de chamada)
+- Investigar e corrigir: GUI fecha após stop em vez de iniciar o pipeline
+- Executar CT-02 com mic + áudio do sistema simultâneos
 - Confirmar que EQ visualizer anima corretamente com a nova arquitetura
 - Atualizar testes unitários de `WindowsAudioBackend` para refletir a nova implementação
 
@@ -97,7 +99,7 @@ O pipeline de transcrição e síntese está implementado e funcional. A interfa
 
 ## Próximo passo recomendado
 
-Gravar um teste de 20 segundos com áudio do sistema tocando (simular chamada) e verificar no log se `chunk_count` é ~200 e o MP3 tem duração completa.
+Investigar o fluxo `_stop_recording_worker → _show_completed → _start_pipeline` na GUI para entender por que a aplicação fecha em vez de executar o pipeline após parar a gravação.
 
 ---
 

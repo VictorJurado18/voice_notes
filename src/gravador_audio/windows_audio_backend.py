@@ -218,6 +218,8 @@ class WindowsAudioBackend(AudioBackend):
         _MAX_LOOP_FRAMES = self._config.sample_rate * 2
 
         chunk_count = 0
+        _rate_gate_hits = 0
+        _overflow_frames_total = 0
         p = pyaudio.PyAudio()
         mic_stream = None
         loop_stream = None
@@ -297,12 +299,15 @@ class WindowsAudioBackend(AudioBackend):
                     if loopback_spec is not None:
                         loop_buf = _drain(loop_q, loopback_spec, loop_buf)
                         if len(loop_buf) > _MAX_LOOP_FRAMES:
-                            loop_buf = loop_buf[len(loop_buf) - _MAX_LOOP_FRAMES:]
+                            excess = len(loop_buf) - _MAX_LOOP_FRAMES
+                            _overflow_frames_total += excess
+                            loop_buf = loop_buf[excess:]
 
                     any_encoded = False
                     while True:
                         # G435 loopback entrega ~2x real-time em blocking mode; gate previne encoding acelerado
                         if chunk_count >= int((_time.monotonic() - _start_wall) / _OUT_SECS) + 2:
+                            _rate_gate_hits += 1
                             break
                         has_mic = mic_spec is not None
                         has_loop = loopback_spec is not None
@@ -350,7 +355,14 @@ class WindowsAudioBackend(AudioBackend):
                     if remaining:
                         file.write(remaining)
 
-            log(f"Gravacao encerrada normalmente | chunks={chunk_count}")
+            _elapsed = _time.monotonic() - _start_wall
+            _dur_cod = chunk_count * _OUT_SECS
+            _ratio = _dur_cod / _elapsed if _elapsed > 0 else 0.0
+            log(
+                f"Gravacao encerrada | chunks={chunk_count} "
+                f"duracao={_dur_cod:.1f}s real={_elapsed:.1f}s ratio={_ratio:.2f}x "
+                f"rate_gate={_rate_gate_hits} overflow={_overflow_frames_total}frames"
+            )
 
         except BaseException as exc:
             log_exception(f"ERRO na thread de gravacao (chunk={chunk_count})", exc)
@@ -359,11 +371,13 @@ class WindowsAudioBackend(AudioBackend):
             if mic_stream is not None:
                 mic_stream.stop_stream()
                 mic_stream.close()
-            # Close loop_stream first to unblock any pending read() in the reader thread
-            if loop_stream is not None:
-                loop_stream.close()
+            # Join reader thread before closing the stream: closing a stream while
+            # another thread is blocking in read() crashes PortAudio's C layer.
+            # stop_event is already set, so the reader exits within one read() cycle (~100 ms).
             if loop_reader is not None:
                 loop_reader.join(timeout=2.0)
+            if loop_stream is not None:
+                loop_stream.close()
             p.terminate()
 
     # ── Utilidades ────────────────────────────────────────────────────────────
