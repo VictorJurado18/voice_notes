@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "PowerShell(cd \"d:\\\\PERSONAL\\\\LLM_WIKI\\\\gravador\"; $env:PYTHONPATH=\"src\"; .\\\\.venv\\\\Scripts\\\\python.exe -m unittest discover -s tests -v 2>&1)"
-    ]
-  }
-}
