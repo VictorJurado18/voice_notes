@@ -45,15 +45,14 @@ A captura de áudio foi validada: gravação de 20s com G435 Wireless produziu c
 - [x] `transcricao.md` com timestamps `[HH:MM:SS]`
 - [x] `resumo.md` com síntese estruturada (Contexto, Decisões, Plano de ação)
 - [x] Botão "Processar MP3 existente" na GUI com seletor de idioma
-- [x] 25 testes unitários passando
+- [x] Seleção de modelo Whisper na GUI (detecta modelos já baixados, default `small`)
+- [x] 35 testes unitários passando
 
 ---
 
 ## Funcionalidades em andamento
 
-- [ ] **Pipeline pós-gravação via GUI** — ao parar a gravação, a GUI fecha em vez de executar transcrição + síntese + pasta
-  - CT-01 confirmou que a captura está correta (chunks=202, MP3 completo)
-  - O bug é no fluxo de retorno do `_stop_recording_worker` → `_show_completed` → `_start_pipeline`
+Nenhuma no momento.
 
 ---
 
@@ -79,8 +78,6 @@ A captura de áudio foi validada: gravação de 20s com G435 Wireless produziu c
 ---
 
 ## Riscos atuais
-
-- **Bug ativo**: GUI fecha ao parar gravação em vez de executar pipeline — causa ainda não identificada
 - Loopback blocking pode bloquear indefinidamente se driver não entregar frames — `stop()` fecha o stream para desbloquear
 - CT-02 (mic + sistema) ainda não executado; comportamento com áudio do sistema tocando não validado
 - `ANTHROPIC_API_KEY` ausente ou inválida interrompe o pipeline (síntese falha, transcrição fica salva)
