@@ -415,13 +415,12 @@ class WindowsAudioBackend(AudioBackend):
         for i in range(self._N_BANDS):
             lo = int(n_fft * (i / self._N_BANDS) ** 1.8)
             hi = int(n_fft * ((i + 1) / self._N_BANDS) ** 1.8)
-            hi = max(hi, lo + 1, n_fft - 1)
+            hi = max(hi, lo + 1)
             hi = min(hi, n_fft)
             val = float(numpy.mean(fft[lo:hi]))
             bands.append(val if numpy.isfinite(val) else 0.0)
 
-        # Escala pelo RMS: barras refletem volume real, não só espectro relativo
-        ref = rms * n_fft * 0.7
+        ref = float(numpy.sqrt(n)) * 0.15
         if ref <= 0.0:
             self._eq_levels = [0.0] * self._N_BANDS
             return

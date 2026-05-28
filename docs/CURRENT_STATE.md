@@ -46,8 +46,9 @@ A captura de áudio foi validada (CT-01 ✅). O pipeline de transcrição e sín
 - [x] `resumo.md` com síntese estruturada (Contexto, Decisões, Plano de ação)
 - [x] Botão "Processar MP3 existente" na GUI com seletor de idioma
 - [x] Seleção de modelo Whisper na GUI (detecta modelos já baixados, default `small`)
+- [x] EQ visualizer gate RMS — silêncio exibe barras zeradas em vez de ruído normalizado
 - [x] Pipeline roda em subprocess isolado (`_pipeline_proc.py`) — crash do ctranslate2 não mata a GUI
-- [x] 35 testes unitários passando
+- [x] 40 testes unitários passando (5 novos cobrem o contrato de isolamento do subprocess)
 
 ---
 
@@ -59,8 +60,8 @@ Nenhuma no momento.
 
 ## Funcionalidades planejadas
 
-- [ ] Teste end-to-end do pipeline com MP3 real de chamada
-- [ ] Validar EQ visualizer com a nova arquitetura de captura
+- [ ] Teste end-to-end do pipeline com MP3 real de chamada (CT-05)
+- [ ] Validar EQ visualizer em uso ao vivo com a nova arquitetura
 
 ---
 
@@ -72,6 +73,7 @@ Nenhuma no momento.
 | 2026-05-28 | Loopback: callback → blocking thread dedicada | Callback do G435/LG ULTRAGEAR não dispara quando áudio do sistema é silencioso |
 | 2026-05-28 | Acumuladores numpy independentes por fonte + chunk fixo 100 ms | Dispositivos têm períodos nativos incompatíveis (480 a 242400 frames) |
 | 2026-05-28 | `encoder.flush()` guardado por `chunk_count > 0` | lameenc levanta RuntimeError se flush chamado sem encode anterior |
+| 2026-05-28 (s2) | EQ normalizado por RMS com gate de silêncio | Peak normalization fazia ruído de fundo parecer sinal — barras nunca zeravam |
 | 2026-05-28 (s2) | Pipeline em subprocess isolado (`_pipeline_proc.py`) | ctranslate2 (C++ backend do faster-whisper) pode causar crash nativo que mata o processo Python inteiro; subprocess isola o crash |
 | 2026-05-21 | Estrutura documental inicializada | Repositório preparado para Spec-Driven Development |
 | 2026-05-21 | Alerta de espaço em disco implementado (spec 0001) | Risco de gravação truncada sem aviso |
@@ -90,10 +92,10 @@ Nenhuma no momento.
 
 ## Pendências
 
-- Executar CT-02 com mic + áudio do sistema simultâneos
-- Confirmar que EQ visualizer anima corretamente com a nova arquitetura
+- Executar CT-05: gravar na GUI, parar, confirmar que pipeline dispara e conclui sem fechar o app
+- Executar CT-02: mic + áudio do sistema simultâneos
+- Validar EQ visualizer em uso ao vivo (barras acompanham o volume real)
 - Atualizar testes unitários de `WindowsAudioBackend` para refletir a nova implementação
-- Validar que a GUI exibe erro corretamente quando o subprocess do pipeline crashar
 
 ---
 

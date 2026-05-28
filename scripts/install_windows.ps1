@@ -39,4 +39,5 @@ Write-Host "Instalando dependencias de audio..."
 
 Write-Host ""
 Write-Host "Instalacao concluida."
-Write-Host "Agora execute Gravar.bat para criar uma gravacao."
+Write-Host "Abra a interface com: Abrir Gravador.vbs"
+Write-Host "Ou grave pelo terminal com: Gravar.bat"

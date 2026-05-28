@@ -49,7 +49,8 @@ $ExitCode = $LASTEXITCODE
 Write-Host ""
 if ($ExitCode -eq 0) {
     Write-Host "Pronto. O arquivo foi salvo na pasta recordings."
-    $Latest = Get-ChildItem -File (Join-Path $ProjectRoot "recordings") -Filter "*.mp3" -ErrorAction SilentlyContinue |
+    $OutputDir = Join-Path $env:USERPROFILE "Music\gravador_audio"
+    $Latest = Get-ChildItem -File $OutputDir -Filter "*.mp3" -Recurse -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
 
