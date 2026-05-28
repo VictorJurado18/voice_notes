@@ -32,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     processar = subparsers.add_parser("processar", help="Transcreve e sintetiza um MP3 existente.")
     processar.add_argument("arquivo", type=Path, help="Caminho para o arquivo MP3.")
     processar.add_argument("--idioma", default="pt", help="Codigo do idioma para transcricao (ex: pt, en, es). Padrao: pt.")
+    processar.add_argument("--modelo", default="small", help="Modelo Whisper para transcricao (ex: small, medium, large-v3). Padrao: small.")
 
     return parser
 
@@ -77,17 +78,17 @@ def _run_processar(args: argparse.Namespace) -> int:
     if mp3_path.suffix.lower() != ".mp3":
         print(f"Arquivo nao e MP3: {mp3_path}", file=sys.stderr)
         return 2
-    return _run_pipeline(mp3_path, language=args.idioma)
+    return _run_pipeline(mp3_path, language=args.idioma, model_size=args.modelo)
 
 
-def _run_pipeline(mp3_path: Path, language: str) -> int:
+def _run_pipeline(mp3_path: Path, language: str, model_size: str = "small") -> int:
     from gravador_audio.pipeline import run
 
     def on_status(msg: str) -> None:
         print(msg)
 
     try:
-        result = run(mp3_path, mp3_path.parent, language=language, on_status=on_status)
+        result = run(mp3_path, mp3_path.parent, language=language, model_size=model_size, on_status=on_status)
     except TranscriptionError as exc:
         print(f"Erro na transcricao: {exc}", file=sys.stderr)
         return 1

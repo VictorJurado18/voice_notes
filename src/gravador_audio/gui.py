@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 from gravador_audio.errors import DiskSpaceError, RecordingError, TranscriptionError
 from gravador_audio.paths import default_output_dir
 from gravador_audio.recording import MIN_FREE_BYTES, RecordingConfig, RecordingService, RecordingState
+from gravador_audio.transcription import available_models
 from gravador_audio.windows_audio_backend import WindowsAudioBackend, WindowsAudioBackendConfig
 
 def _log_hint() -> str:
@@ -49,6 +50,8 @@ class RecorderApp(tk.Tk):
         self.last_file = tk.StringVar(value="-")
         self.disk_warning = tk.StringVar(value="")
         self.pipeline_language = tk.StringVar(value=_LANG_LABELS[0])
+        self._available_models = available_models()
+        self.pipeline_model = tk.StringVar(value="small")
         self.device_info_text = tk.StringVar(value="")
 
         self._eq_smooth: list[float] = [0.0] * 16
@@ -166,6 +169,15 @@ class RecorderApp(tk.Tk):
             width=14,
             font=("Segoe UI", 10),
         ).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(process_row, text="  Modelo:", background="#f3f4f6", font=("Segoe UI", 10)).pack(side=tk.LEFT)
+        ttk.Combobox(
+            process_row,
+            textvariable=self.pipeline_model,
+            values=self._available_models,
+            state="readonly",
+            width=10,
+            font=("Segoe UI", 10),
+        ).pack(side=tk.LEFT, padx=(4, 0))
 
         # Barra de progresso do pipeline
         self.progressbar = ttk.Progressbar(container, mode="indeterminate", length=640)
@@ -268,9 +280,10 @@ class RecorderApp(tk.Tk):
         self.last_file.set(str(output_path))
         lang_label = self.pipeline_language.get()
         lang_code = _LANG_CODES.get(lang_label, "pt")
-        log(f"GUI: iniciando pipeline | arquivo={output_path.name} lang={lang_code}")
+        model_size = self.pipeline_model.get()
+        log(f"GUI: iniciando pipeline | arquivo={output_path.name} lang={lang_code} modelo={model_size}")
         self.status.set("Iniciando pipeline...")
-        self._start_pipeline(output_path, language=lang_code)
+        self._start_pipeline(output_path, language=lang_code, model_size=model_size)
 
     def _update_device_info(self) -> None:
         if self._service is None:
@@ -297,16 +310,17 @@ class RecorderApp(tk.Tk):
         mp3_path = Path(path)
         label = self.pipeline_language.get()
         lang_code = _LANG_CODES.get(label, "pt")
+        model_size = self.pipeline_model.get()
 
         self.start_button.configure(state=tk.DISABLED)
         self.process_button.configure(state=tk.DISABLED)
         self.status.set("Iniciando pipeline...")
         self.last_file.set(str(mp3_path))
-        self._start_pipeline(mp3_path, language=lang_code)
+        self._start_pipeline(mp3_path, language=lang_code, model_size=model_size)
 
-    def _start_pipeline(self, mp3_path: Path, language: str | None) -> None:
+    def _start_pipeline(self, mp3_path: Path, language: str | None, model_size: str = "small") -> None:
         from gravador_audio.log import log, log_exception
-        log(f"GUI: _start_pipeline | arquivo={mp3_path.name} lang={language}")
+        log(f"GUI: _start_pipeline | arquivo={mp3_path.name} lang={language} modelo={model_size}")
         try:
             self.progressbar.start(12)
             log("GUI: progressbar iniciada")
@@ -318,7 +332,7 @@ class RecorderApp(tk.Tk):
 
             self._pipeline_thread = threading.Thread(
                 target=self._pipeline_worker,
-                args=(mp3_path, language or "pt", on_status),
+                args=(mp3_path, language or "pt", model_size, on_status),
                 daemon=True,
             )
             self._pipeline_thread.start()
@@ -330,12 +344,12 @@ class RecorderApp(tk.Tk):
             self.status.set("Erro ao iniciar pipeline")
             messagebox.showerror("Erro ao iniciar pipeline", f"{exc}\n\n{_log_hint()}")
 
-    def _pipeline_worker(self, mp3_path: Path, language: str, on_status: object) -> None:
+    def _pipeline_worker(self, mp3_path: Path, language: str, model_size: str, on_status: object) -> None:
         from gravador_audio.log import log
-        log(f"GUI: _pipeline_worker iniciado | {mp3_path.name}")
+        log(f"GUI: _pipeline_worker iniciado | {mp3_path.name} modelo={model_size}")
         from gravador_audio.pipeline import run
         try:
-            result = run(mp3_path, mp3_path.parent, language=language, on_status=on_status)
+            result = run(mp3_path, mp3_path.parent, language=language, model_size=model_size, on_status=on_status)
         except TranscriptionError as exc:
             log(f"GUI: TranscriptionError no pipeline: {exc}")
             self.after(0, self._on_pipeline_error, str(exc))

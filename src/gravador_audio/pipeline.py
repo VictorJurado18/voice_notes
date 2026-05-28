@@ -21,6 +21,7 @@ def run(
     mp3_path: Path,
     output_dir: Path,
     language: str = "pt",
+    model_size: str = "small",
     on_status: object = None,
 ) -> PipelineResult:
     def _notify(msg: str) -> None:
@@ -31,7 +32,7 @@ def run(
 
     # Etapa 1: transcrição — se falhar, não move o MP3
     _notify("Transcrevendo audio...")
-    segments: list[Segment] = transcribe(mp3_path, language=language)
+    segments: list[Segment] = transcribe(mp3_path, language=language, model_size=model_size)
     transcricao_texto = segments_to_markdown(segments)
 
     # Etapa 2: síntese — se falhar, usa fallback (nome genérico, resumo com aviso)

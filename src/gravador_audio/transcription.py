@@ -1,11 +1,37 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from gravador_audio.errors import TranscriptionError
 
-_MODEL_SIZE = "small"
+_ALL_MODELS = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
+
+
+def _hf_cache_dir() -> Path:
+    if env := os.environ.get("HUGGINGFACE_HUB_CACHE"):
+        return Path(env)
+    if env := os.environ.get("HF_HOME"):
+        return Path(env) / "hub"
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def available_models() -> list[str]:
+    """Returns faster-whisper models already present in the HuggingFace cache.
+    Always includes 'small' as minimum fallback."""
+    cache = _hf_cache_dir()
+    found: list[str] = []
+    for name in _ALL_MODELS:
+        snapshots = cache / f"models--Systran--faster-whisper-{name}" / "snapshots"
+        try:
+            if snapshots.exists() and any(snapshots.iterdir()):
+                found.append(name)
+        except OSError:
+            pass
+    if "small" not in found:
+        found.insert(0, "small")
+    return found
 
 
 @dataclass(frozen=True)
@@ -15,7 +41,9 @@ class Segment:
     text: str
 
 
-def transcribe(audio_path: Path, language: str = "pt") -> list[Segment]:
+def transcribe(
+    audio_path: Path, language: str = "pt", model_size: str = "small"
+) -> list[Segment]:
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
@@ -23,8 +51,11 @@ def transcribe(audio_path: Path, language: str = "pt") -> list[Segment]:
             "faster-whisper nao instalado. Execute: pip install faster-whisper"
         ) from exc
 
+    from gravador_audio.log import log
+    log(f"Transcricao iniciada | modelo={model_size} idioma={language} arquivo={audio_path.name}")
+
     try:
-        model = WhisperModel(_MODEL_SIZE, device="cpu", compute_type="int8")
+        model = WhisperModel(model_size, device="cpu", compute_type="int8")
         raw_segments, _ = model.transcribe(str(audio_path), language=language)
         return [Segment(start=s.start, end=s.end, text=s.text.strip()) for s in raw_segments]
     except Exception as exc:
