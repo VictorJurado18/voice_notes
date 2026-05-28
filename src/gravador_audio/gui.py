@@ -7,7 +7,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from gravador_audio.errors import DiskSpaceError, RecordingError, TranscriptionError
+from gravador_audio.errors import DiskSpaceError, RecordingError
 from gravador_audio.paths import default_output_dir
 from gravador_audio.recording import MIN_FREE_BYTES, RecordingConfig, RecordingService, RecordingState
 from gravador_audio.transcription import available_models
@@ -244,6 +244,7 @@ class RecorderApp(tk.Tk):
             log("GUI: _stop_recording ignorado (service None ou nao gravando)")
             return
         log("GUI: _stop_recording chamado — iniciando worker thread")
+        self._started_at = None
         self.stop_button.configure(state=tk.DISABLED)
         self.status.set("Finalizando...")
         self._stop_thread = threading.Thread(target=self._stop_recording_worker, daemon=True)
@@ -349,21 +350,91 @@ class RecorderApp(tk.Tk):
             messagebox.showerror("Erro ao iniciar pipeline", f"{exc}\n\n{_log_hint()}")
 
     def _pipeline_worker(self, mp3_path: Path, language: str, model_size: str, on_status: object) -> None:
+        import json
+        import os
+        import subprocess
+        import sys
+        import threading
         from gravador_audio.log import log
+
         log(f"GUI: _pipeline_worker iniciado | {mp3_path.name} modelo={model_size}")
-        from gravador_audio.pipeline import run
+
+        # Garante que o subprocess herda o PYTHONPATH correto (src/)
+        env = os.environ.copy()
+        src_dir = str(Path(__file__).resolve().parent.parent)
+        existing_pp = env.get("PYTHONPATH", "")
+        if src_dir not in existing_pp.split(os.pathsep):
+            env["PYTHONPATH"] = src_dir + (os.pathsep + existing_pp if existing_pp else "")
+
+        cmd = [
+            sys.executable, "-m", "gravador_audio._pipeline_proc",
+            str(mp3_path), str(mp3_path.parent), language, model_size,
+        ]
+
         try:
-            result = run(mp3_path, mp3_path.parent, language=language, model_size=model_size, on_status=on_status)
-        except TranscriptionError as exc:
-            log(f"GUI: TranscriptionError no pipeline: {exc}")
-            self.after(0, self._on_pipeline_error, str(exc))
-            return
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                env=env,
+            )
         except Exception as exc:
-            log(f"GUI: excecao no pipeline: {type(exc).__name__}: {exc}")
+            log(f"GUI: falha ao lancar subprocess do pipeline: {exc}")
             self.after(0, self._on_pipeline_error, str(exc))
             return
-        log(f"GUI: pipeline concluido -> {result.folder.name}")
-        self.after(0, self._on_pipeline_done, result)
+
+        def _drain_stderr() -> None:
+            for line in proc.stderr:
+                stripped = line.rstrip()
+                if stripped:
+                    log(f"GUI: pipeline stderr: {stripped[:200]}")
+
+        threading.Thread(target=_drain_stderr, daemon=True).start()
+
+        result_event = None
+        error_msg = None
+
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            etype = event.get("type")
+            if etype == "status":
+                if callable(on_status):
+                    on_status(event.get("msg", ""))
+            elif etype == "done":
+                result_event = event
+            elif etype == "error":
+                error_msg = event.get("msg", "Erro desconhecido")
+
+        proc.wait()
+
+        if result_event is not None:
+            from gravador_audio.pipeline import PipelineResult
+            result = PipelineResult(
+                folder=Path(result_event["folder"]),
+                mp3_path=Path(result_event["mp3"]),
+                transcricao_path=Path(result_event["transcricao"]),
+                resumo_path=Path(result_event["resumo"]),
+            )
+            log(f"GUI: pipeline concluido -> {result.folder.name}")
+            self.after(0, self._on_pipeline_done, result)
+        elif error_msg is not None:
+            log(f"GUI: pipeline retornou erro: {error_msg}")
+            self.after(0, self._on_pipeline_error, error_msg)
+        elif proc.returncode != 0:
+            log(f"GUI: subprocess do pipeline encerrou com crash (code={proc.returncode})")
+            self.after(0, self._on_pipeline_error,
+                       f"Pipeline encerrou inesperadamente (codigo={proc.returncode}). Verifique o log.")
+        else:
+            log("GUI: subprocess do pipeline encerrou sem resultado")
+            self.after(0, self._on_pipeline_error, "Pipeline encerrou sem resultado.")
 
     def _on_pipeline_done(self, result: object) -> None:
         from gravador_audio.log import log

@@ -10,19 +10,19 @@ Use para retomada de contexto entre sessões, agentes e conversas.
 
 ## Status geral
 
-Em desenvolvimento ativo — captura de áudio validada; bug no pipeline pós-gravação via GUI
+Em desenvolvimento ativo — captura de áudio e pipeline validados; crash nativo do ctranslate2 mitigado via subprocess
 
 ---
 
 ## Última atualização
 
-2026-05-28
+2026-05-28 (sessão 2)
 
 ---
 
 ## Resumo atual
 
-A captura de áudio foi validada: gravação de 20s com G435 Wireless produziu chunks=202 e MP3 de duração completa (CT-01 ✅). O pipeline de transcrição e síntese está implementado. Novo problema ativo: ao clicar em "Parar gravação" na GUI, a aplicação fecha em vez de disparar automaticamente o pipeline (transcrição → síntese → pasta nomeada). O fluxo de "Processar MP3 existente" não foi afetado.
+A captura de áudio foi validada (CT-01 ✅). O pipeline de transcrição e síntese está implementado. O crash nativo do ctranslate2 (que matava o processo Python inteiro durante a transcrição) foi mitigado: o pipeline agora roda em um subprocess isolado (`_pipeline_proc.py`). Se o ctranslate2 travar, apenas o subprocess morre; a GUI detecta o código de saída não-zero e exibe mensagem de erro em vez de fechar silenciosamente.
 
 ---
 
@@ -46,6 +46,7 @@ A captura de áudio foi validada: gravação de 20s com G435 Wireless produziu c
 - [x] `resumo.md` com síntese estruturada (Contexto, Decisões, Plano de ação)
 - [x] Botão "Processar MP3 existente" na GUI com seletor de idioma
 - [x] Seleção de modelo Whisper na GUI (detecta modelos já baixados, default `small`)
+- [x] Pipeline roda em subprocess isolado (`_pipeline_proc.py`) — crash do ctranslate2 não mata a GUI
 - [x] 35 testes unitários passando
 
 ---
@@ -71,6 +72,7 @@ Nenhuma no momento.
 | 2026-05-28 | Loopback: callback → blocking thread dedicada | Callback do G435/LG ULTRAGEAR não dispara quando áudio do sistema é silencioso |
 | 2026-05-28 | Acumuladores numpy independentes por fonte + chunk fixo 100 ms | Dispositivos têm períodos nativos incompatíveis (480 a 242400 frames) |
 | 2026-05-28 | `encoder.flush()` guardado por `chunk_count > 0` | lameenc levanta RuntimeError se flush chamado sem encode anterior |
+| 2026-05-28 (s2) | Pipeline em subprocess isolado (`_pipeline_proc.py`) | ctranslate2 (C++ backend do faster-whisper) pode causar crash nativo que mata o processo Python inteiro; subprocess isola o crash |
 | 2026-05-21 | Estrutura documental inicializada | Repositório preparado para Spec-Driven Development |
 | 2026-05-21 | Alerta de espaço em disco implementado (spec 0001) | Risco de gravação truncada sem aviso |
 | 2026-05-21 | Pipeline pós-gravação implementado (spec 0002) | Automatizar transcrição + síntese que era feita manualmente |
@@ -82,21 +84,22 @@ Nenhuma no momento.
 - CT-02 (mic + sistema) ainda não executado; comportamento com áudio do sistema tocando não validado
 - `ANTHROPIC_API_KEY` ausente ou inválida interrompe o pipeline (síntese falha, transcrição fica salva)
 - GUI e CLI não têm testes automatizados
+- Se o ctranslate2 crashar dentro do subprocess, a GUI mostra erro mas o MP3 não é movido (fica na pasta de saída original)
 
 ---
 
 ## Pendências
 
-- Investigar e corrigir: GUI fecha após stop em vez de iniciar o pipeline
 - Executar CT-02 com mic + áudio do sistema simultâneos
 - Confirmar que EQ visualizer anima corretamente com a nova arquitetura
 - Atualizar testes unitários de `WindowsAudioBackend` para refletir a nova implementação
+- Validar que a GUI exibe erro corretamente quando o subprocess do pipeline crashar
 
 ---
 
 ## Próximo passo recomendado
 
-Investigar o fluxo `_stop_recording_worker → _show_completed → _start_pipeline` na GUI para entender por que a aplicação fecha em vez de executar o pipeline após parar a gravação.
+Testar o pipeline completo com um MP3 real para validar que a GUI exibe progresso e resultado corretamente com o subprocess isolado. Depois, considerar spec 0004 (opções de output) ou spec 0006 (diarização).
 
 ---
 

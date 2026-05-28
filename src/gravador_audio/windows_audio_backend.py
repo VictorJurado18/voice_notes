@@ -402,6 +402,13 @@ class WindowsAudioBackend(AudioBackend):
         if n == 0:
             return
         mono = numpy.nan_to_num(mono, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Gate: silêncio real mostra barras zeradas em vez de ruído normalizado
+        rms = float(numpy.sqrt(numpy.mean(mono ** 2)))
+        if rms < 5e-4:
+            self._eq_levels = [0.0] * self._N_BANDS
+            return
+
         fft = numpy.abs(numpy.fft.rfft(mono))
         n_fft = len(fft)
         bands: list[float] = []
@@ -412,11 +419,13 @@ class WindowsAudioBackend(AudioBackend):
             hi = min(hi, n_fft)
             val = float(numpy.mean(fft[lo:hi]))
             bands.append(val if numpy.isfinite(val) else 0.0)
-        peak = max(bands) if bands else 0.0
-        if peak <= 0.0:
+
+        # Escala pelo RMS: barras refletem volume real, não só espectro relativo
+        ref = rms * n_fft * 0.7
+        if ref <= 0.0:
             self._eq_levels = [0.0] * self._N_BANDS
             return
-        self._eq_levels = [min(1.0, b / peak) for b in bands]
+        self._eq_levels = [min(1.0, b / ref) for b in bands]
 
     def _build_encoder(self, lameenc: Any) -> Any:
         encoder = lameenc.Encoder()
