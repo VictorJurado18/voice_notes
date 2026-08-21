@@ -1,13 +1,32 @@
 [project]
-name = "gravador-audio"
-version = "0.1.0"
-description = "Aplicacao Windows para gravar audio local em MP3."
+name = "record-transcript-resume"
+version = "0.10.14"
+description = "Windows app to record audio locally, transcribe with Whisper, and summarize via Codex or Claude Code CLI."
 requires-python = ">=3.12"
 dependencies = [
+    "customtkinter>=5.2.2",
     "lameenc>=1.8.2",
-    "soundcard>=0.4.6",
+    "numpy>=1.24",
+    "pyaudiowpatch>=0.2.12",
+    "faster-whisper>=1.0",
+    "pillow>=10.0",
+    "pystray>=0.19.5",
+    "keyring>=25.7",
+    "yt-dlp>=2025.8.22",
+    "imageio-ffmpeg>=0.6.0",
+    "pyannote.audio==4.0.7",
+    "python-docx>=1.1",
+    "reportlab>=4.2",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+build = ["pyinstaller>=6.11"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project.scripts]
-gravador-audio = "gravador_audio.cli:main"
-gravador-audio-gui = "gravador_audio.gui:main"
+record-transcript-resume = "record_transcript_resume.cli:main"
+record-transcript-resume-gui = "record_transcript_resume.gui:main"

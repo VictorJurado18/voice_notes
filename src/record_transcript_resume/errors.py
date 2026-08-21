@@ -1,4 +1,4 @@
-class RecordingError(Exception):
+﻿class RecordingError(Exception):
     """Base error for recording failures."""
 
 
@@ -12,3 +12,15 @@ class AudioBackendUnavailableError(RecordingError):
 
 class OutputPathError(RecordingError):
     """Raised when the output path cannot be prepared safely."""
+
+
+class DiskSpaceError(RecordingError):
+    """Raised when disk space is insufficient to start recording."""
+
+
+class TranscriptionError(RecordingError):
+    """Raised when audio transcription fails."""
+
+
+class SynthesisError(RecordingError):
+    """Raised when Claude CLI synthesis fails."""

@@ -5,17 +5,17 @@ $VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $VenvPythonw = Join-Path $ProjectRoot ".venv\Scripts\pythonw.exe"
 
 if (-not (Test-Path $VenvPython)) {
-    Write-Host "Ambiente local nao encontrado."
-    Write-Host "Execute Instalar.bat antes de abrir o gravador."
+    Write-Host "Virtual environment not found."
+    Write-Host "Run Install.bat before opening the recorder."
     exit 1
 }
 
 $env:PYTHONPATH = Join-Path $ProjectRoot "src"
 
 if (Test-Path $VenvPythonw) {
-    & $VenvPythonw -m gravador_audio.gui
+    & $VenvPythonw -m record_transcript_resume.gui --widget
 }
 else {
-    & $VenvPython -m gravador_audio.gui
+    & $VenvPython -m record_transcript_resume.gui --widget
 }
 exit $LASTEXITCODE

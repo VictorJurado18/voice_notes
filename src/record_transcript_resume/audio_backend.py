@@ -1,9 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from gravador_audio.errors import AudioBackendUnavailableError
+from record_transcript_resume.errors import AudioBackendUnavailableError
 
 
 class AudioBackend(ABC):
@@ -23,8 +23,8 @@ class UnavailableAudioBackend(AudioBackend):
 
     def start(self, output_path: Path) -> None:
         raise AudioBackendUnavailableError(
-            "Captura de audio ainda nao implementada. "
-            "Defina e aprove uma biblioteca/API de audio para Windows antes de gravar."
+            "Audio capture not yet implemented. "
+            "Define and approve an audio library/API for Windows before recording."
         )
 
     def stop(self) -> None:
