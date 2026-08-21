@@ -1,5 +1,5 @@
 #define MyAppName "Voice Notes"
-#define MyAppVersion "0.10.14"
+#define MyAppVersion "0.10.15"
 #define MyAppPublisher "Voice Notes"
 #define MyAppExeName "VoiceNotes.exe"
 
@@ -15,12 +15,13 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist
-OutputBaseFilename=VoiceNotes-Setup
+OutputBaseFilename=VoiceNotes-Setup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 CloseApplications=yes
 UninstallDisplayName={#MyAppName}
+SetupIconFile=..\assets\voice-notes.ico
 
 [Tasks]
 Name: "desktopicon"; Description: "Criar atalho na área de trabalho"; GroupDescription: "Atalhos:"; Flags: unchecked

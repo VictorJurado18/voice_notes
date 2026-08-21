@@ -90,6 +90,15 @@ _COLORS = {
 }
 
 
+def _asset_path(filename: str) -> Path:
+    """Return a bundled asset path in development and in the Windows build."""
+    if getattr(sys, "frozen", False):
+        base_dir = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    else:
+        base_dir = Path(__file__).resolve().parents[2]
+    return base_dir / "assets" / filename
+
+
 class _TrayController:
     """Owns the Windows notification-area icon without coupling Tk to pystray."""
 
@@ -99,7 +108,16 @@ class _TrayController:
 
     @staticmethod
     def _create_image(image_module: object, draw_module: object) -> object:
-        """Create a small, crisp microphone/waveform mark for the tray."""
+        """Load the application mark, with a code-drawn fallback for resilience."""
+        icon_path = _asset_path("voice-notes.png")
+        if icon_path.is_file():
+            try:
+                image = image_module.open(icon_path).convert("RGBA")
+                resampling = getattr(image_module, "Resampling", image_module).LANCZOS
+                return image.resize((64, 64), resampling)
+            except Exception:
+                pass
+
         image = image_module.new("RGBA", (64, 64), (0, 0, 0, 0))
         draw = draw_module.Draw(image)
         draw.rounded_rectangle((4, 4, 60, 60), radius=16, fill=_COLORS["accent"])
@@ -181,6 +199,11 @@ class RecorderApp(ctk.CTk):
     ) -> None:
         super().__init__()
         self.title("Voice Notes")
+        try:
+            self.iconbitmap(default=str(_asset_path("voice-notes.ico")))
+        except tk.TclError:
+            # The icon is optional when running the source on a non-Windows host.
+            pass
         # A borderless widget does not receive the native Windows resize frame.
         # Its lower-right corner is handled directly by the root window.
         self._min_widget_width = 520

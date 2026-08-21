@@ -10,7 +10,7 @@ Você não precisa instalar Python, abrir terminal ou criar uma conta técnica p
 
 ### 1. Baixar e instalar
 
-1. Baixe o arquivo mais recente `VoiceNotes-Setup-x.y.z.exe` na página de download ou em **Releases**. Se você recebeu a pasta deste projeto, o instalador atual é [VoiceNotes-Setup-0.10.14.exe](dist/VoiceNotes-Setup-0.10.14.exe). Não baixe o código-fonte (`.zip`) para instalar o aplicativo.
+1. Baixe o arquivo mais recente `VoiceNotes-Setup-x.y.z.exe` na página de download ou em **Releases**. Se você recebeu a pasta deste projeto, o instalador atual é [VoiceNotes-Setup-0.10.15.exe](dist/VoiceNotes-Setup-0.10.15.exe). Não baixe o código-fonte (`.zip`) para instalar o aplicativo.
 2. Clique duas vezes no instalador baixado.
 3. Mantenha marcada a opção **Iniciar automaticamente com o Windows** se quiser deixar o widget sempre disponível perto do relógio.
 4. Mantenha marcada a opção de instalar **Codex CLI e Claude Code** se quiser usar um deles para criar resumos. A preparação pode levar alguns minutos e requer internet.
