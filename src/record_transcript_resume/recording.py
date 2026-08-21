@@ -1,12 +1,15 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
-from gravador_audio.audio_backend import AudioBackend
-from gravador_audio.errors import InvalidRecordingStateError, OutputPathError, RecordingError
+from record_transcript_resume.audio_backend import AudioBackend
+from record_transcript_resume.errors import DiskSpaceError, InvalidRecordingStateError, OutputPathError, RecordingError
+
+MIN_FREE_BYTES = 100 * 1024 * 1024  # 100 MB
 
 
 class RecordingState(str, Enum):
@@ -20,12 +23,12 @@ class RecordingState(str, Enum):
 @dataclass(frozen=True)
 class RecordingConfig:
     output_dir: Path
-    filename_prefix: str = "gravacao"
+    filename_prefix: str = "recording"
     extension: str = ".mp3"
 
     def build_output_path(self, now: datetime | None = None) -> Path:
         timestamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
-        safe_prefix = self.filename_prefix.strip() or "gravacao"
+        safe_prefix = self.filename_prefix.strip() or "recording"
         return self.output_dir / f"{safe_prefix}-{timestamp}{self.extension}"
 
 
@@ -49,9 +52,37 @@ class RecordingService:
     def last_error(self) -> str | None:
         return self._last_error
 
+    @property
+    def eq_levels(self) -> list[float]:
+        from record_transcript_resume.windows_audio_backend import WindowsAudioBackend
+        if isinstance(self._backend, WindowsAudioBackend):
+            return self._backend.eq_levels
+        return [0.0] * 16
+
+    @property
+    def device_info(self) -> dict[str, str]:
+        from record_transcript_resume.windows_audio_backend import WindowsAudioBackend
+        if isinstance(self._backend, WindowsAudioBackend):
+            return self._backend.device_names
+        return {}
+
+    @property
+    def thread_error(self) -> str | None:
+        from record_transcript_resume.windows_audio_backend import WindowsAudioBackend
+        if isinstance(self._backend, WindowsAudioBackend):
+            return self._backend.thread_error
+        return None
+
+    @property
+    def is_backend_alive(self) -> bool:
+        from record_transcript_resume.windows_audio_backend import WindowsAudioBackend
+        if isinstance(self._backend, WindowsAudioBackend):
+            return self._backend.is_thread_alive
+        return True
+
     def start(self) -> Path:
         if self._state == RecordingState.RECORDING:
-            raise InvalidRecordingStateError("Ja existe uma gravacao em andamento.")
+            raise InvalidRecordingStateError("A recording is already in progress.")
 
         output_path = self._prepare_output_path()
 
@@ -70,11 +101,11 @@ class RecordingService:
 
     def stop(self) -> Path:
         if self._state != RecordingState.RECORDING:
-            raise InvalidRecordingStateError("Nao ha gravacao em andamento para finalizar.")
+            raise InvalidRecordingStateError("No recording in progress to stop.")
 
         if self._current_output_path is None:
             self._state = RecordingState.ERROR
-            self._last_error = "Caminho de saida ausente durante finalizacao."
+            self._last_error = "Output path missing during finalization."
             raise OutputPathError(self._last_error)
 
         self._state = RecordingState.FINALIZING
@@ -93,15 +124,26 @@ class RecordingService:
     def _prepare_output_path(self) -> Path:
         output_dir = self._config.output_dir
         if output_dir.exists() and not output_dir.is_dir():
-            raise OutputPathError(f"Destino de gravacao nao e uma pasta: {output_dir}")
+            raise OutputPathError(f"Recording destination is not a folder: {output_dir}")
 
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            raise OutputPathError(f"Nao foi possivel criar a pasta de saida: {output_dir}") from exc
+            raise OutputPathError(f"Could not create output folder: {output_dir}") from exc
+
+        try:
+            free = shutil.disk_usage(output_dir).free
+        except OSError:
+            free = None
+
+        if free is not None and free < MIN_FREE_BYTES:
+            free_mb = free // (1024 * 1024)
+            raise DiskSpaceError(
+                f"Insufficient disk space: {free_mb} MB available (minimum 100 MB)."
+            )
 
         output_path = self._config.build_output_path()
         if output_path.exists():
-            raise OutputPathError(f"Arquivo de saida ja existe: {output_path}")
+            raise OutputPathError(f"Output file already exists: {output_path}")
 
         return output_path

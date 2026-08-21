@@ -10,11 +10,14 @@ credentials.*
 # AI agent context and spec workflow files
 AGENTS.md
 AI_AGENT_RULES.md
+CLAUDE.md
 PROMPT.md
 PROJECT_CONTEXT.md
 STRUCTURE.md
+OBJECTIVES.md
 prompt_pai.md
 docs/
+.claude/
 
 # Python generated files
 __pycache__/
