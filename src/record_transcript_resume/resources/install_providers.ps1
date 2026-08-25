@@ -13,6 +13,7 @@ $logPath = Join-Path $ToolsRoot "provider-setup.log"
 
 function Write-SetupLog([string]$Message) {
     $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    New-Item -ItemType Directory -Force -Path $ToolsRoot | Out-Null
     Add-Content -LiteralPath $logPath -Value "[$stamp] $Message" -Encoding UTF8
 }
 
@@ -42,15 +43,9 @@ try {
 
     $nodeExe = Join-Path $nodeHome "node.exe"
     if (-not (Test-Path $nodeExe)) {
-        $allReleases = Get-RemoteText "https://nodejs.org/dist/index.json" | ConvertFrom-Json
-        $release = @(
-            $allReleases | Where-Object { $_.lts -and (@($_.files) -contains "win-x64-zip") } |
-                Select-Object -First 1
-        )[0]
-        if (-not $release) {
-            throw "Could not find a current Node.js LTS Windows x64 release."
-        }
-
+        $releases = Get-RemoteText "https://nodejs.org/dist/index.json" | ConvertFrom-Json
+        $release = @($releases | Where-Object { $_.lts -and (@($_.files) -contains "win-x64-zip") } | Select-Object -First 1)[0]
+        if (-not $release) { throw "Could not find a current Node.js LTS Windows x64 release." }
         $archiveName = "node-$($release.version)-win-x64.zip"
         $archivePath = Join-Path $env:TEMP $archiveName
         $extractRoot = Join-Path $env:TEMP "voice-notes-node-$($release.version)"
@@ -58,21 +53,9 @@ try {
         Save-RemoteFile "$baseUrl/$archiveName" $archivePath
 
         $checksums = Get-RemoteText "$baseUrl/SHASUMS256.txt"
-        $expectedHash = (($checksums -split "`n") |
-            Where-Object { $_ -match [regex]::Escape($archiveName) } |
-            Select-Object -First 1).Split()[0]
-        $sha256 = [System.Security.Cryptography.SHA256]::Create()
-        $archiveStream = [System.IO.File]::OpenRead($archivePath)
-        try {
-            $actualHash = ([BitConverter]::ToString($sha256.ComputeHash($archiveStream))).Replace("-", "").ToLowerInvariant()
-        }
-        finally {
-            $archiveStream.Dispose()
-            $sha256.Dispose()
-        }
-        if (-not $expectedHash -or $actualHash -ne $expectedHash.ToLowerInvariant()) {
-            throw "The downloaded Node.js archive did not pass checksum verification."
-        }
+        $expectedHash = (($checksums -split "`n" | Where-Object { $_ -match [regex]::Escape($archiveName) } | Select-Object -First 1).Split()[0]
+        $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
+        if (-not $expectedHash -or $actualHash -ne $expectedHash.ToUpperInvariant()) { throw "The downloaded Node.js archive did not pass checksum verification." }
 
         if (Test-Path $extractRoot) { Remove-Item -LiteralPath $extractRoot -Recurse -Force }
         Expand-Archive -LiteralPath $archivePath -DestinationPath $extractRoot -Force
@@ -87,16 +70,12 @@ try {
 
     $npmCmd = Join-Path $nodeHome "npm.cmd"
     if (-not (Test-Path $npmCmd)) { throw "Bundled npm.cmd was not found." }
-    & $npmCmd --prefix $cliHome install --global "@openai/codex" "@anthropic-ai/claude-code" --no-audit --no-fund
+    # Local installation keeps every executable below ToolsRoot and never needs PATH.
+    & $npmCmd --prefix $cliHome install "@openai/codex" "@anthropic-ai/claude-code" --no-audit --no-fund
     if ($LASTEXITCODE -ne 0) { throw "npm finished with exit code $LASTEXITCODE." }
     Write-SetupLog "Codex CLI and Claude Code were installed for this Windows user."
 }
 catch {
-    try {
-        New-Item -ItemType Directory -Force -Path $ToolsRoot | Out-Null
-        Write-SetupLog "Provider setup could not finish: $($_.Exception.Message)"
-    }
-    catch {
-        # Keep the application installer successful even when networking is blocked.
-    }
+    try { Write-SetupLog "Provider setup could not finish: $($_.Exception.Message)" } catch {}
+    exit 1
 }

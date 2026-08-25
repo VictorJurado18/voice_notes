@@ -21,6 +21,7 @@ from record_transcript_resume.windows_audio_backend import WindowsAudioBackend, 
 from record_transcript_resume.jobs import JobStore, ProcessingJob
 from record_transcript_resume.library import LibraryItem, discover_recordings
 from record_transcript_resume.synthesis import SUMMARY_TEMPLATE_LABELS
+from record_transcript_resume.windows_process import hidden_process_kwargs
 
 def _log_hint() -> str:
     from record_transcript_resume.log import _log_path
@@ -251,7 +252,10 @@ class RecorderApp(ctk.CTk):
         self._compact_drag_moved = False
         self._compact_width = 468
         self._compact_height = 64
-        self._login_prompted_providers: set[str] = set()
+        self._provider_setup_running = False
+        self._provider_setup_attempted = False
+        self._provider_status_check_running = False
+        self._update_check_running = False
         self._tray = _TrayController(self)
         self._tray_available = False
 
@@ -298,6 +302,7 @@ class RecorderApp(ctk.CTk):
             value=_diarization_enabled_by_default(saved_huggingface_token),
         )
         self.provider_hint = tk.StringVar()
+        self.update_hint = tk.StringVar(value="Verifique se há uma nova versão do repositório.")
         self.device_info_text = tk.StringVar(value="")
         self.library_search = tk.StringVar(value="")
         self.library_detail = tk.StringVar(value="Selecione uma gravação para ver as ações disponíveis.")
@@ -330,10 +335,10 @@ class RecorderApp(ctk.CTk):
             # Aguarda o primeiro ciclo do Tk para não mostrar um flash da janela
             # quando o atalho de inicialização do Windows for executado.
             self.after(120, self._hide_to_tray)
-        # The installer sets up both providers before starting the app. Check in
-        # the background after the first paint so an unauthenticated account
-        # gets its ordinary terminal login without delaying the widget.
+        # The installer sets up both providers before starting the app. If that
+        # step was interrupted, recover it in the background after first paint.
         self.after(700, self._check_provider_login)
+        self.after(1600, self._check_for_updates)
         self.after(1000, self._resume_interrupted_jobs)
 
     def _build_ui(self) -> None:
@@ -356,7 +361,7 @@ class RecorderApp(ctk.CTk):
         container = ctk.CTkFrame(
             self,
             fg_color=_COLORS["surface"],
-            corner_radius=0,
+            corner_radius=22,
         )
         container.pack(fill=tk.BOTH, expand=True)
         self._window_surface = container
@@ -629,6 +634,11 @@ class RecorderApp(ctk.CTk):
             processing_card, textvariable=self.provider_hint, font=("Segoe UI", 9),
             text_color="#C9D3FF", anchor="w", wraplength=470,
         ).pack(fill=tk.X, padx=14, pady=(0, 9))
+        self.provider_login_button = ctk.CTkButton(
+            processing_card, text="Conectar conta no navegador", command=self._start_provider_login,
+            height=32, corner_radius=8, fg_color="#244462", hover_color="#315A80",
+            text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
+        )
 
         self.new_provider_button = ctk.CTkButton(
             processing_card, text="+ Novo Provider", command=self._toggle_api_provider_form,
@@ -676,6 +686,28 @@ class RecorderApp(ctk.CTk):
         self.api_request_template.pack(fill=tk.X, padx=8, pady=(0, 8))
         ctk.CTkButton(self.api_card, text="Salvar provider por token", command=self._save_api_provider, height=32, corner_radius=8, fg_color="#244462", hover_color="#315A80", text_color=_COLORS["text"], font=("Segoe UI", 10, "bold")).pack(fill=tk.X, padx=10, pady=(6, 10))
 
+        update_card = settings_card(
+            self._settings_sections["provider"], "Atualizações", "Compara a versão instalada com a última Release publicada e instala a nova versão sem abrir terminal.",
+        )
+        ctk.CTkLabel(
+            update_card, textvariable=self.update_hint, font=("Segoe UI", 9), text_color=_COLORS["muted"],
+            anchor="w", justify=tk.LEFT, wraplength=470,
+        ).pack(fill=tk.X, padx=14, pady=(0, 8))
+        update_actions = ctk.CTkFrame(update_card, fg_color="transparent")
+        update_actions.pack(fill=tk.X, padx=14, pady=(0, 12))
+        self.update_apply_button = ctk.CTkButton(
+            update_actions, text="Atualizar agora", command=self._apply_update, state=tk.DISABLED,
+            width=124, height=32, corner_radius=8, fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"],
+            text_color="#FFFFFF", font=("Segoe UI", 10, "bold"),
+        )
+        self.update_apply_button.pack(side=tk.RIGHT)
+        self.update_check_button = ctk.CTkButton(
+            update_actions, text="Verificar atualizações", command=self._check_for_updates,
+            width=142, height=32, corner_radius=8, fg_color="#263550", hover_color="#34476B",
+            text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
+        )
+        self.update_check_button.pack(side=tk.RIGHT, padx=(0, 6))
+
         transcription_card = settings_card(self._settings_sections["transcription"], "Transcrição", "Idioma e qualidade do texto transcrito.")
         self._api_form_anchor = self.new_provider_button
         transcript_row = ctk.CTkFrame(transcription_card, fg_color="transparent")
@@ -715,11 +747,30 @@ class RecorderApp(ctk.CTk):
             diarization_row, text="Ativa automaticamente quando houver token salvo do Hugging Face.",
             text_color=_COLORS["muted"], font=("Segoe UI", 9), anchor="w",
         ).pack(anchor=tk.W, pady=(2, 4))
-        ctk.CTkEntry(
+        self.huggingface_token_entry = ctk.CTkEntry(
             diarization_row, textvariable=self.huggingface_token, show="•",
             placeholder_text="Token de leitura do Hugging Face", height=32, corner_radius=8,
             fg_color="#0D1525", border_color="#2A3A58", text_color=_COLORS["text"],
-        ).pack(fill=tk.X)
+        )
+        self.huggingface_token_entry.pack(fill=tk.X)
+        token_actions = ctk.CTkFrame(diarization_row, fg_color="transparent")
+        token_actions.pack(fill=tk.X, pady=(6, 0))
+        self.huggingface_token_visibility_button = ctk.CTkButton(
+            token_actions, text="Mostrar", command=self._toggle_huggingface_token_visibility,
+            width=76, height=29, corner_radius=7, fg_color="#263550", hover_color="#34476B",
+            text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
+        )
+        self.huggingface_token_visibility_button.pack(side=tk.LEFT)
+        ctk.CTkButton(
+            token_actions, text="Copiar", command=self._copy_huggingface_token,
+            width=68, height=29, corner_radius=7, fg_color="#263550", hover_color="#34476B",
+            text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        ctk.CTkButton(
+            token_actions, text="Salvar token", command=self._save_huggingface_token,
+            width=94, height=29, corner_radius=7, fg_color="#244462", hover_color="#315A80",
+            text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
+        ).pack(side=tk.RIGHT)
 
         self._file_panel = ctk.CTkFrame(
             content, fg_color="#111A2C", corner_radius=16,
@@ -1094,22 +1145,23 @@ class RecorderApp(ctk.CTk):
             self.diarize_speakers.set(bool(separate_speakers and self.huggingface_token.get().strip()))
 
     def _check_provider_login(self) -> None:
-        """Open the selected provider's normal login prompt once when needed."""
+        """Reflect provider readiness without ever opening a command prompt."""
         provider = _SUMMARY_PROVIDER_CODES.get(self.summary_provider.get(), "codex")
         if provider == "api":
             from record_transcript_resume.api_provider import has_token
+            self.provider_login_button.pack_forget()
             self.provider_hint.set(
                 "Resumo por API · token configurado" if has_token()
                 else "Cadastre URL, modelo e token em Ajustes para usar a API."
             )
             return
-        if provider in self._login_prompted_providers:
+        if self._provider_status_check_running:
             return
+        self._provider_status_check_running = True
+        threading.Thread(target=self._provider_status_check_worker, args=(provider,), daemon=True).start()
 
-        from record_transcript_resume.synthesis import (
-            login_terminal_command,
-            provider_login_status,
-        )
+    def _provider_status_check_worker(self, provider: str) -> None:
+        from record_transcript_resume.synthesis import provider_login_status
 
         try:
             status = provider_login_status(provider)
@@ -1117,24 +1169,160 @@ class RecorderApp(ctk.CTk):
             from record_transcript_resume.log import log
 
             log(f"GUI: falha ao verificar login do Codex: {exc}")
+            self.after(0, self._on_provider_status_checked, provider, None)
+            return
+        self.after(0, self._on_provider_status_checked, provider, status)
+
+    def _on_provider_status_checked(self, provider: str, status: object | None) -> None:
+        self._provider_status_check_running = False
+        if provider != _SUMMARY_PROVIDER_CODES.get(self.summary_provider.get(), "codex") or status is None:
             return
 
-        if not status.installed:
-            self.provider_hint.set(f"{self.summary_provider.get()} está sendo preparado pelo instalador. Abra novamente em instantes.")
+        if not getattr(status, "installed", False):
+            self.provider_login_button.pack_forget()
+            if not self._provider_setup_running and not getattr(self, "_provider_setup_attempted", False):
+                self._provider_setup_running = True
+                self._provider_setup_attempted = True
+                self.provider_hint.set(f"Preparando {self.summary_provider.get()} automaticamente. Isso pode levar alguns minutos.")
+                threading.Thread(target=self._provider_setup_worker, daemon=True).start()
+            elif getattr(self, "_provider_setup_attempted", False):
+                from record_transcript_resume.provider_setup import provider_setup_log_path
+
+                self.provider_hint.set(f"{self.summary_provider.get()} ainda não está disponível. Detalhes: {provider_setup_log_path()}")
+            else:
+                self.provider_hint.set(f"Preparando {self.summary_provider.get()} automaticamente. Isso pode levar alguns minutos.")
             return
-        if status.authenticated:
+        if getattr(status, "authenticated", False):
+            self.provider_login_button.pack_forget()
             self.provider_hint.set(f"Resumo por {self.summary_provider.get()}  ·  conta conectada")
             return
+        self.provider_hint.set(f"{self.summary_provider.get()} está instalado; conecte sua conta pelo navegador para ativar os resumos.")
+        self.provider_login_button.pack(fill=tk.X, padx=14, pady=(0, 10), before=self.new_provider_button)
 
-        self._login_prompted_providers.add(provider)
-        self.provider_hint.set(f"Entre no {self.summary_provider.get()} no terminal que foi aberto para ativar os resumos.")
+    def _provider_setup_worker(self) -> None:
+        """Recover a missed installer setup without showing PowerShell or cmd.exe."""
+        from record_transcript_resume.log import log
+        from record_transcript_resume.provider_setup import provider_setup_log_path, start_provider_setup
+
         try:
-            subprocess.Popen(["cmd.exe", "/k", login_terminal_command(provider)])
+            process = start_provider_setup()
+            exit_code = process.wait()
+            if exit_code == 0:
+                message = "Providers instalados automaticamente. Conecte sua conta para gerar resumos."
+            else:
+                log_path = provider_setup_log_path()
+                message = f"Não foi possível preparar os providers automaticamente. Detalhes: {log_path}"
+            log(f"GUI: instalação automática dos providers concluída (code={exit_code})")
+        except Exception as exc:
+            log(f"GUI: falha ao instalar providers automaticamente: {exc}")
+            message = "Não foi possível preparar os providers automaticamente. Tente novamente ao abrir o app."
+        self.after(0, self._on_provider_setup_finished, message)
+
+    def _on_provider_setup_finished(self, message: str) -> None:
+        self._provider_setup_running = False
+        self.provider_hint.set(message)
+        self.after(400, self._check_provider_login)
+
+    def _start_provider_login(self) -> None:
+        """Request browser authentication only when the person chooses it."""
+        provider = _SUMMARY_PROVIDER_CODES.get(self.summary_provider.get(), "codex")
+        if provider == "api":
+            return
+        try:
+            from record_transcript_resume.synthesis import start_provider_login
+
+            start_provider_login(provider)
         except OSError as exc:
             from record_transcript_resume.log import log
 
-            log(f"GUI: nao foi possivel abrir o terminal de login: {exc}")
-            self.provider_hint.set(f"Faça login no {self.summary_provider.get()} pelo Prompt de Comando para ativar os resumos.")
+            log(f"GUI: não foi possível iniciar login de {provider}: {exc}")
+            self.provider_hint.set(f"Não foi possível abrir a autenticação de {self.summary_provider.get()}.")
+            return
+        self.provider_hint.set(f"Autenticação de {self.summary_provider.get()} iniciada no navegador. Volte aqui após concluir.")
+        self.after(2500, self._check_provider_login)
+
+    def _toggle_huggingface_token_visibility(self) -> None:
+        visible = self.huggingface_token_entry.cget("show") == ""
+        self.huggingface_token_entry.configure(show="•" if visible else "")
+        self.huggingface_token_visibility_button.configure(text="Mostrar" if visible else "Ocultar")
+
+    def _copy_huggingface_token(self) -> None:
+        token = self.huggingface_token.get().strip()
+        if not token:
+            messagebox.showinfo("Token ausente", "Informe ou salve o token do Hugging Face antes de copiar.")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(token)
+        self.update()
+        self.status.set("Token do Hugging Face copiado para a área de transferência.")
+
+    def _save_huggingface_token(self) -> None:
+        token = self.huggingface_token.get().strip()
+        if not token:
+            messagebox.showerror("Token ausente", "Informe o token do Hugging Face antes de salvar.")
+            return
+        try:
+            import keyring
+
+            keyring.set_password("Voice Notes", "huggingface-token", token)
+        except Exception as exc:
+            messagebox.showerror("Não foi possível salvar", f"O token não pôde ser salvo no Cofre de Credenciais do Windows.\n\n{exc}")
+            return
+        self.huggingface_token.set(token)
+        self.diarize_speakers.set(True)
+        self.status.set("Token do Hugging Face salvo com segurança.")
+
+    def _check_for_updates(self) -> None:
+        if self._update_check_running:
+            return
+        self._update_check_running = True
+        self.update_check_button.configure(state=tk.DISABLED, text="Verificando…")
+        threading.Thread(target=self._update_check_worker, daemon=True).start()
+
+    def _update_check_worker(self) -> None:
+        from record_transcript_resume.updates import check_for_updates
+
+        result = check_for_updates()
+        self.after(0, self._on_update_checked, result)
+
+    def _on_update_checked(self, result: object) -> None:
+        self._update_check_running = False
+        self._available_update = result
+        self.update_hint.set(str(getattr(result, "message", "Não foi possível verificar atualizações.")))
+        self.update_check_button.configure(state=tk.NORMAL, text="Verificar atualizações")
+        self.update_apply_button.configure(state=tk.NORMAL if getattr(result, "available", False) else tk.DISABLED)
+
+    def _apply_update(self) -> None:
+        update = getattr(self, "_available_update", None)
+        if update is None or not getattr(update, "available", False):
+            return
+        active_work = self._active_work_description()
+        if active_work is not None:
+            messagebox.showinfo("Atualização aguardando", f"Conclua a {active_work} antes de atualizar o Voice Notes.")
+            return
+        if not messagebox.askyesno(
+            "Instalar atualização",
+            f"A versão {getattr(update, 'version', '')} será baixada e instalada agora. O Voice Notes será reiniciado. Continuar?",
+        ):
+            return
+        self.update_apply_button.configure(state=tk.DISABLED, text="Atualizando…")
+        self.update_check_button.configure(state=tk.DISABLED)
+        threading.Thread(target=self._apply_update_worker, args=(update,), daemon=True).start()
+
+    def _apply_update_worker(self, update: object) -> None:
+        from record_transcript_resume.updates import download_and_start_update
+
+        result = download_and_start_update(update)
+        self.after(0, self._on_update_applied, result)
+
+    def _on_update_applied(self, result: object) -> None:
+        self.update_hint.set(str(getattr(result, "message", "Não foi possível atualizar.")))
+        self.update_apply_button.configure(text="Atualizar agora")
+        self.update_check_button.configure(state=tk.NORMAL)
+        if getattr(result, "available", False):
+            self.after(500, self._on_close)
+        else:
+            self._check_for_updates()
 
     def _set_widget_mode(self, enabled: bool) -> None:
         if not enabled or self._widget_mode:
@@ -1547,6 +1735,7 @@ class RecorderApp(ctk.CTk):
             self._refresh_library()
         if page == "settings":
             self._show_settings_section(getattr(self, "_active_settings_section", "provider"))
+        self._schedule_widget_rounding()
         self.after_idle(self._apply_page_minimum)
 
     def _show_recording_page(self) -> None:
@@ -2426,6 +2615,7 @@ class RecorderApp(ctk.CTk):
                 text=True,
                 encoding="utf-8",
                 env=env,
+                **hidden_process_kwargs(),
             )
         except Exception as exc:
             log(f"GUI: falha ao lancar subprocess do pipeline: {exc}")
