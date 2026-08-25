@@ -21,13 +21,13 @@ def _release(version: str, asset_name: str | None = None) -> dict[str, object]:
 
 
 def test_check_for_updates_offers_a_newer_published_installer() -> None:
-    with patch("record_transcript_resume.updates._latest_release_payload", return_value=_release("0.10.16")):
+    with patch("record_transcript_resume.updates._latest_release_payload", return_value=_release("0.10.17")):
         result = check_for_updates()
 
     assert result == ApplicationUpdate(
         available=True,
-        message="Nova versão disponível: 0.10.16.",
-        version="0.10.16",
+        message="Nova versão disponível: 0.10.17.",
+        version="0.10.17",
         download_url="https://example.test/VoiceNotes-Setup.exe",
         sha256="abc123",
     )
