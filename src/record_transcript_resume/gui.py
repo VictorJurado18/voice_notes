@@ -89,6 +89,8 @@ _COLORS = {
     "border": "#283754",
     "text": "#F6F8FF",
     "muted": "#AAB8D4",
+    "brand": "#D3DCF3",
+    "brand_muted": "#8FA1C9",
     # The primary action keeps enough contrast with its white label in both
     # the resting and hovered states.
     "accent": "#6656D8",
@@ -209,7 +211,7 @@ class RecorderApp(ctk.CTk):
         enable_tray: bool = True,
     ) -> None:
         super().__init__()
-        self.title("Voice Notes")
+        self.title("Voice Notes (Beta)")
         try:
             self.iconbitmap(default=str(_asset_path("voice-notes.ico")))
         except tk.TclError:
@@ -221,7 +223,9 @@ class RecorderApp(ctk.CTk):
         self._min_widget_height = 560
         self._active_min_width = self._min_widget_width
         self._active_min_height = self._min_widget_height
-        self._main_widget_height = min(620, max(self._min_widget_height, self.winfo_screenheight() - 280))
+        # Keep the primary workflow fully visible on a typical desktop while
+        # preserving enough room for the taskbar on smaller displays.
+        self._main_widget_height = min(650, max(self._min_widget_height, self.winfo_screenheight() - 200))
         self._preferred_widget_width = 560
         self._user_resized_window = False
         self._widget_scale = 1.0
@@ -385,17 +389,35 @@ class RecorderApp(ctk.CTk):
         self._window_surface = container
 
         header = ctk.CTkFrame(container, fg_color="transparent")
-        header.pack(fill=tk.X, padx=18, pady=(12, 6))
+        header.pack(fill=tk.X, padx=20, pady=(16, 8))
         self._header = header
         title_block = ctk.CTkFrame(header, fg_color="transparent")
         title_block.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        eyebrow_row = ctk.CTkFrame(title_block, fg_color="transparent")
+        eyebrow_row.pack(anchor=tk.W)
         eyebrow = ctk.CTkLabel(
-            title_block, text="VOICE NOTES  ·  ARRASTE PARA MOVER", font=("Segoe UI", 9, "bold"),
-            text_color=_COLORS["accent"], anchor="w",
+            eyebrow_row, text="Voice", font=("Segoe UI", 15, "bold"),
+            text_color="#EEF3FF", anchor="w",
         )
-        eyebrow.pack(anchor=tk.W)
+        eyebrow.pack(side=tk.LEFT)
+        notes_label = ctk.CTkLabel(
+            eyebrow_row, text="Notes", font=("Segoe UI", 15, "bold"),
+            text_color="#A99AF4", anchor="w",
+        )
+        notes_label.pack(side=tk.LEFT, padx=(4, 0))
+        beta_label = ctk.CTkLabel(
+            eyebrow_row, text="BETA", font=("Segoe UI", 8, "bold"),
+            text_color="#B7AAFF", fg_color="#29254B", corner_radius=6,
+            width=38, height=20,
+        )
+        beta_label.pack(side=tk.LEFT, padx=(8, 0))
+        drag_label = ctk.CTkLabel(
+            eyebrow_row, text="· mover", font=("Segoe UI", 9),
+            text_color=_COLORS["brand_muted"], anchor="w",
+        )
+        drag_label.pack(side=tk.LEFT, padx=(7, 0))
         title = ctk.CTkLabel(
-            title_block, text="Gravador", font=("Segoe UI", 21, "bold"),
+            title_block, text="Gravador", font=("Segoe UI", 20, "bold"),
             text_color=_COLORS["text"], anchor="w",
         )
         title.pack(anchor=tk.W, pady=(0, 1))
@@ -403,28 +425,31 @@ class RecorderApp(ctk.CTk):
         drag_hint = ctk.CTkLabel(title_block, text="", height=1, anchor="w")
         drag_hint.pack(anchor=tk.W)
         self._header_drag_hint = drag_hint
-        self._make_draggable(header, title_block, eyebrow, title, drag_hint)
+        self._make_draggable(
+            header, title_block, eyebrow_row, eyebrow, notes_label, beta_label,
+            drag_label, title, drag_hint,
+        )
 
         self.close_button = ctk.CTkButton(
-            header, text="Encerrar", command=self._on_close, width=68, height=32,
+            header, text="Encerrar", command=self._on_close, width=64, height=32,
             corner_radius=10, fg_color="transparent", hover_color="#3A1D2A",
             text_color=_COLORS["muted"], font=("Segoe UI", 10, "bold"),
         )
         self.close_button.pack(side=tk.RIGHT, padx=(6, 0), pady=(8, 0))
         self.hide_button = ctk.CTkButton(
-            header, text="Ocultar", command=self._hide_to_tray, width=70, height=32,
+            header, text="Ocultar", command=self._hide_to_tray, width=64, height=32,
             corner_radius=10, fg_color="transparent", hover_color=_COLORS["surface_alt"],
             text_color=_COLORS["muted"], font=("Segoe UI", 10, "bold"),
         )
         self.hide_button.pack(side=tk.RIGHT, padx=(4, 0), pady=(8, 0))
         self.minimize_button = ctk.CTkButton(
-            header, text="Minimizar", command=self._minimize_widget, width=82, height=32,
+            header, text="Minimizar", command=self._minimize_widget, width=76, height=32,
             corner_radius=10, fg_color="transparent", hover_color=_COLORS["surface_alt"],
             text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
         )
         self.minimize_button.pack(side=tk.RIGHT, padx=(4, 0), pady=(8, 0))
         navigation = ctk.CTkFrame(container, fg_color="#0D1525", corner_radius=10)
-        navigation.pack(fill=tk.X, padx=18, pady=(0, 6))
+        navigation.pack(fill=tk.X, padx=20, pady=(4, 8))
         self._page_buttons: dict[str, ctk.CTkButton] = {}
         for page, label, command in [
             ("record", "Gravar", self._show_recording_page),
@@ -466,9 +491,9 @@ class RecorderApp(ctk.CTk):
         )
 
         status_card = ctk.CTkFrame(content, fg_color=_COLORS["surface_alt"], corner_radius=16)
-        status_card.pack(fill=tk.X, padx=18, pady=(3, 6))
+        status_card.pack(fill=tk.X, padx=20, pady=(4, 8))
         status_row = ctk.CTkFrame(status_card, fg_color="transparent")
-        status_row.pack(fill=tk.X, padx=14, pady=(6, 0))
+        status_row.pack(fill=tk.X, padx=14, pady=(10, 0))
         ctk.CTkLabel(
             status_row, text="STATUS", font=("Segoe UI", 9, "bold"),
             text_color=_COLORS["muted"], anchor="w",
@@ -480,14 +505,14 @@ class RecorderApp(ctk.CTk):
         ctk.CTkLabel(
             status_card, textvariable=self.status, font=("Segoe UI", 14, "bold"),
             text_color=_COLORS["text"], anchor="w",
-        ).pack(fill=tk.X, padx=14, pady=(0, 2))
+        ).pack(fill=tk.X, padx=14, pady=(1, 3))
         ctk.CTkLabel(
             status_card, textvariable=self.recording_limit_hint, font=("Segoe UI", 9),
             text_color=_COLORS["muted"], anchor="w",
-        ).pack(fill=tk.X, padx=14, pady=(0, 3))
+        ).pack(fill=tk.X, padx=14, pady=(0, 6))
 
         meter_card = ctk.CTkFrame(status_card, fg_color="#0C1423", corner_radius=10)
-        meter_card.pack(fill=tk.X, padx=12, pady=(0, 6))
+        meter_card.pack(fill=tk.X, padx=12, pady=(0, 10))
         self._eq_canvas = tk.Canvas(
             meter_card, height=22, bg="#0C1423", highlightthickness=0, bd=0,
         )
@@ -498,13 +523,12 @@ class RecorderApp(ctk.CTk):
             content, textvariable=self.device_info_text, font=("Segoe UI", 10),
             text_color=_COLORS["muted"], anchor="w",
         )
-        self.device_info_label.pack(fill=tk.X, padx=22, pady=(0, 4))
 
         self._container = content
         capture_card = ctk.CTkFrame(content, fg_color="#141E32", corner_radius=14)
-        capture_card.pack(fill=tk.X, padx=18, pady=(6, 6))
+        capture_card.pack(fill=tk.X, padx=20, pady=(8, 8))
         source_row = ctk.CTkFrame(capture_card, fg_color="transparent")
-        source_row.pack(fill=tk.X, padx=12, pady=(6, 4))
+        source_row.pack(fill=tk.X, padx=14, pady=(10, 8))
         self._source_buttons: list[ctk.CTkRadioButton] = []
         for text, value in [
             ("Microfone + sistema", "both"),
@@ -517,16 +541,16 @@ class RecorderApp(ctk.CTk):
                 fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"],
                 border_color="#5C6D91", radiobutton_width=18, radiobutton_height=18,
             )
-            button.pack(side=tk.LEFT, padx=(2, 14))
+            button.pack(side=tk.LEFT, padx=(2, 16))
             self._source_buttons.append(button)
 
         separator = ctk.CTkFrame(capture_card, height=1, fg_color="#253552")
         separator.pack(fill=tk.X, padx=14)
         output_row = ctk.CTkFrame(capture_card, fg_color="transparent")
-        output_row.pack(fill=tk.X, padx=14, pady=(4, 4))
+        output_row.pack(fill=tk.X, padx=14, pady=(8, 8))
         ctk.CTkLabel(
             output_row, text="SALVAR EM", font=("Segoe UI", 9, "bold"),
-            text_color=_COLORS["muted"], width=76, anchor="w",
+            text_color=_COLORS["muted"], width=100, anchor="w",
         ).pack(side=tk.LEFT)
         self.output_entry = ctk.CTkEntry(
             output_row, textvariable=self.output_dir, height=34, corner_radius=9,
@@ -542,10 +566,10 @@ class RecorderApp(ctk.CTk):
         self.output_browse_button.pack(side=tk.LEFT, padx=(8, 0))
         ctk.CTkFrame(capture_card, height=1, fg_color="#253552").pack(fill=tk.X, padx=14)
         timer_row = ctk.CTkFrame(capture_card, fg_color="transparent")
-        timer_row.pack(fill=tk.X, padx=14, pady=(4, 4))
+        timer_row.pack(fill=tk.X, padx=14, pady=(8, 8))
         ctk.CTkLabel(
             timer_row, text="PARAR APÓS", font=("Segoe UI", 9, "bold"),
-            text_color=_COLORS["muted"], width=76, anchor="w",
+            text_color=_COLORS["muted"], width=100, anchor="w",
         ).pack(side=tk.LEFT)
         self.recording_limit_entry = ctk.CTkEntry(
             timer_row, textvariable=self.recording_limit_value, placeholder_text="Sem limite",
@@ -563,7 +587,7 @@ class RecorderApp(ctk.CTk):
         self.recording_limit_selector.pack(side=tk.LEFT, padx=(8, 0))
         ctk.CTkFrame(capture_card, height=1, fg_color="#253552").pack(fill=tk.X, padx=14)
         recording_output_row = ctk.CTkFrame(capture_card, fg_color="transparent")
-        recording_output_row.pack(fill=tk.X, padx=14, pady=(4, 4))
+        recording_output_row.pack(fill=tk.X, padx=14, pady=(8, 8))
         ctk.CTkLabel(
             recording_output_row, text="DEPOIS DE PARAR", font=("Segoe UI", 9, "bold"),
             text_color=_COLORS["muted"], width=100, anchor="w",
@@ -579,7 +603,7 @@ class RecorderApp(ctk.CTk):
         self.recording_output_selector.pack(side=tk.LEFT, fill=tk.X, expand=True)
         ctk.CTkFrame(capture_card, height=1, fg_color="#253552").pack(fill=tk.X, padx=14)
         preferences_row = ctk.CTkFrame(capture_card, fg_color="transparent")
-        preferences_row.pack(fill=tk.X, padx=14, pady=(4, 4))
+        preferences_row.pack(fill=tk.X, padx=14, pady=(8, 10))
         profile_field = ctk.CTkFrame(preferences_row, fg_color="transparent")
         profile_field.pack(side=tk.LEFT, fill=tk.X, expand=True)
         ctk.CTkLabel(
@@ -664,9 +688,12 @@ class RecorderApp(ctk.CTk):
 
         def settings_card(parent: tk.Misc, title_text: str, detail: str) -> ctk.CTkFrame:
             card = ctk.CTkFrame(parent, fg_color="#111A2C", corner_radius=12)
-            card.pack(fill=tk.X, padx=14, pady=(0, 10))
+            card.pack(fill=tk.X, padx=14, pady=(0, 12))
             ctk.CTkLabel(card, text=title_text, font=("Segoe UI", 11, "bold"), text_color=_COLORS["text"], anchor="w").pack(fill=tk.X, padx=14, pady=(12, 0))
-            ctk.CTkLabel(card, text=detail, font=("Segoe UI", 10), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, padx=14, pady=(1, 10))
+            ctk.CTkLabel(
+                card, text=detail, font=("Segoe UI", 10), text_color=_COLORS["muted"],
+                anchor="w", justify=tk.LEFT, wraplength=448,
+            ).pack(fill=tk.X, padx=14, pady=(2, 10))
             return card
 
         processing_card = settings_card(self._settings_sections["provider"], "Resumo", "Escolha quem cria o resumo.")
@@ -778,10 +805,10 @@ class RecorderApp(ctk.CTk):
         self.update_check_button.pack(side=tk.RIGHT, padx=(0, 6))
 
         support_card = settings_card(
-            self._settings_sections["provider"], "Curtiu o Voice Notes?", "Se ele te salvou em uma reunião, aula ou ideia de última hora, um cafezinho ajuda a manter o projeto vivo. ☕",
+            self._settings_sections["provider"], "Curtiu o Voice Notes?", "Se ele te salvou em uma reunião, aula ou ideia de última hora, um apoio ajuda a manter o projeto vivo.",
         )
         ctk.CTkButton(
-            support_card, text="Mandar um cafezinho ☕", command=self._open_pix_support,
+            support_card, text="Apoiar o projeto", command=self._open_pix_support,
             height=32, corner_radius=8, fg_color="#263550", hover_color="#34476B",
             text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
         ).pack(fill=tk.X, padx=14, pady=(0, 12))
@@ -824,7 +851,11 @@ class RecorderApp(ctk.CTk):
         ctk.CTkLabel(
             diarization_row, text="Ativa automaticamente quando houver token salvo do Hugging Face.",
             text_color=_COLORS["muted"], font=("Segoe UI", 9), anchor="w",
-        ).pack(anchor=tk.W, pady=(2, 4))
+        ).pack(anchor=tk.W, pady=(3, 8))
+        ctk.CTkLabel(
+            diarization_row, text="TOKEN DO HUGGING FACE", font=("Segoe UI", 9, "bold"),
+            text_color=_COLORS["muted"], anchor="w",
+        ).pack(fill=tk.X, pady=(0, 3))
         self.huggingface_token_entry = ctk.CTkEntry(
             diarization_row, textvariable=self.huggingface_token, show="•",
             placeholder_text="Token de leitura do Hugging Face", height=32, corner_radius=8,
@@ -832,7 +863,7 @@ class RecorderApp(ctk.CTk):
         )
         self.huggingface_token_entry.pack(fill=tk.X)
         token_actions = ctk.CTkFrame(diarization_row, fg_color="transparent")
-        token_actions.pack(fill=tk.X, pady=(6, 0))
+        token_actions.pack(fill=tk.X, pady=(8, 0))
         self.huggingface_token_visibility_button = ctk.CTkButton(
             token_actions, text="Mostrar", command=self._toggle_huggingface_token_visibility,
             width=76, height=29, corner_radius=7, fg_color="#263550", hover_color="#34476B",
@@ -857,11 +888,11 @@ class RecorderApp(ctk.CTk):
         ctk.CTkLabel(
             self._file_panel, text="IMPORTAR ARQUIVO", font=("Segoe UI", 11, "bold"),
             text_color=_COLORS["text"], anchor="w",
-        ).pack(fill=tk.X, padx=16, pady=(16, 1))
+        ).pack(fill=tk.X, padx=16, pady=(14, 1))
         ctk.CTkLabel(
             self._file_panel, text="Selecione um áudio já gravado para transcrever e resumir.",
             font=("Segoe UI", 9), text_color=_COLORS["muted"], anchor="w",
-        ).pack(fill=tk.X, padx=16, pady=(0, 14))
+        ).pack(fill=tk.X, padx=16, pady=(0, 10))
         self.process_button = ctk.CTkButton(
             self._file_panel, text="Escolher arquivo de áudio", command=self._process_existing_mp3,
             height=42, corner_radius=10, fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"],
@@ -944,7 +975,7 @@ class RecorderApp(ctk.CTk):
             fg_color="#080C16", border_color="#2A3A58", text_color=_COLORS["text"], font=("Segoe UI", 10),
         )
         self.youtube_url_entry.pack(fill=tk.X, padx=16)
-        ctk.CTkLabel(self._youtube_panel, text="O QUE FAZER", font=("Segoe UI", 9, "bold"), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, padx=16, pady=(12, 3))
+        ctk.CTkLabel(self._youtube_panel, text="O QUE FAZER", font=("Segoe UI", 9, "bold"), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, padx=16, pady=(10, 3))
         self.youtube_mode_selector = ctk.CTkComboBox(
             self._youtube_panel, variable=self.youtube_mode,
             values=["Transcrição e resumo", "Só transcrição", "Só resumo"], state="readonly",
@@ -953,7 +984,7 @@ class RecorderApp(ctk.CTk):
             dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
         )
         self.youtube_mode_selector.pack(fill=tk.X, padx=16)
-        ctk.CTkLabel(self._youtube_panel, text="PERFIL", font=("Segoe UI", 9, "bold"), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, padx=16, pady=(12, 3))
+        ctk.CTkLabel(self._youtube_panel, text="PERFIL", font=("Segoe UI", 9, "bold"), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, padx=16, pady=(10, 3))
         self.youtube_profile_selector = ctk.CTkComboBox(
             self._youtube_panel, variable=self.processing_profile, values=list(_PROCESSING_PROFILES), state="readonly",
             height=32, corner_radius=8, fg_color="#080C16", border_color="#2A3A58",
@@ -961,7 +992,7 @@ class RecorderApp(ctk.CTk):
             dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
         )
         self.youtube_profile_selector.pack(fill=tk.X, padx=16)
-        ctk.CTkLabel(self._youtube_panel, text="FORMATO DO RESUMO", font=("Segoe UI", 9, "bold"), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, padx=16, pady=(12, 3))
+        ctk.CTkLabel(self._youtube_panel, text="FORMATO DO RESUMO", font=("Segoe UI", 9, "bold"), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, padx=16, pady=(10, 3))
         self.youtube_template_selector = ctk.CTkComboBox(
             self._youtube_panel, variable=self.summary_template, values=_SUMMARY_TEMPLATE_LABELS,
             state="readonly", height=32, corner_radius=8, fg_color="#080C16", border_color="#2A3A58",
@@ -974,8 +1005,8 @@ class RecorderApp(ctk.CTk):
             height=42, corner_radius=10, fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"],
             text_color="#FFFFFF", font=("Segoe UI", 11, "bold"),
         )
-        self.youtube_process_button.pack(fill=tk.X, padx=16, pady=(14, 3))
-        ctk.CTkLabel(self._youtube_panel, textvariable=self.youtube_hint, font=("Segoe UI", 9), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, padx=17, pady=(0, 16))
+        self.youtube_process_button.pack(fill=tk.X, padx=16, pady=(12, 4))
+        ctk.CTkLabel(self._youtube_panel, textvariable=self.youtube_hint, font=("Segoe UI", 9), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, padx=17, pady=(0, 12))
 
         # Biblioteca local: permanece dentro do widget para não fragmentar a tarefa
         # entre janelas pequenas. Ela indexa as pastas já criadas pelo pipeline.
@@ -1018,7 +1049,7 @@ class RecorderApp(ctk.CTk):
         library_list_area = ctk.CTkFrame(self._library_panel, fg_color="transparent")
         library_list_area.pack(fill=tk.X, padx=14, pady=(0, 7))
         self.library_listbox = tk.Listbox(
-            library_list_area, height=7, activestyle="none", selectmode=tk.SINGLE,
+            library_list_area, height=6, activestyle="none", selectmode=tk.SINGLE,
             bg="#0D1525", fg=_COLORS["text"], selectbackground="#384A7A",
             selectforeground="#FFFFFF", highlightthickness=1, highlightbackground="#2A3A58",
             relief=tk.FLAT, font=("Segoe UI", 10), exportselection=False,
@@ -1197,6 +1228,7 @@ class RecorderApp(ctk.CTk):
             ],
         }
         self._current_page = "record"
+        self.device_info_text.trace_add("write", self._on_device_info_changed)
         self._show_page("record")
 
         self._widget_hidden: tuple[tk.Misc, ...] = ()
@@ -1382,7 +1414,7 @@ class RecorderApp(ctk.CTk):
 
         window = ctk.CTkToplevel(self)
         self._pix_support_window = window
-        window.title("Bora de cafezinho?")
+        window.title("Apoie o Voice Notes")
         window.resizable(False, False)
         window.transient(self)
         window.configure(fg_color=_COLORS["bg"])
@@ -1394,7 +1426,7 @@ class RecorderApp(ctk.CTk):
         )
         card.pack(fill=tk.BOTH, expand=True, padx=18, pady=18)
         ctk.CTkLabel(
-            card, text="☕ Curtiu o Voice Notes?", font=("Segoe UI", 16, "bold"),
+            card, text="Curtiu o Voice Notes?", font=("Segoe UI", 16, "bold"),
             text_color=_COLORS["text"],
         ).pack(padx=20, pady=(20, 5))
         ctk.CTkLabel(
@@ -1553,7 +1585,7 @@ class RecorderApp(ctk.CTk):
         self._widget_mode = True
         for widget in self._widget_hidden:
             widget.pack_forget()
-        self.title("Voice Notes")
+        self.title("Voice Notes (Beta)")
         self.attributes("-topmost", True)
         self.minsize(self._min_widget_width, self._min_widget_height)
         self.geometry(f"560x{self._main_widget_height}")
@@ -1716,7 +1748,7 @@ class RecorderApp(ctk.CTk):
             *(self._compact_position or (full_x + max(0, (full_width - self._compact_width) // 2), full_y + 12))
         )
         try:
-            self.attributes("-alpha", 0.92)
+            self.attributes("-alpha", 1.0)
         except tk.TclError:
             pass
         self._refresh_compact_controls()
@@ -1958,6 +1990,11 @@ class RecorderApp(ctk.CTk):
             for widget, _options in layouts:
                 widget.pack_forget()
         for widget, options in self._page_layouts[page]:
+            # Reserve a row between the two recording cards only when there is
+            # actual device information to show.  An empty label previously
+            # created an unexplained visual gap in the primary workflow.
+            if widget is self.device_info_label and not self.device_info_text.get().strip():
+                continue
             widget.pack(**options)
         # Destinations always open at their first field.  Without this reset a
         # tall previous page could leave a newly selected page scrolled to an
@@ -1965,7 +2002,7 @@ class RecorderApp(ctk.CTk):
         self._container._parent_canvas.yview_moveto(0)
 
         page_titles = {
-            "record": ("Gravar", "Arraste esta área para mover"),
+            "record": ("Gravar", "Configure a captura e inicie quando estiver pronto."),
             "file": ("Arquivo", "Importe uma gravação já existente"),
             "youtube": ("YouTube", "Importe um vídeo autorizado para transcrever"),
             "library": ("Biblioteca", "Encontre, revise e retome seus resultados"),
@@ -1990,6 +2027,23 @@ class RecorderApp(ctk.CTk):
             self._show_settings_section(getattr(self, "_active_settings_section", "provider"))
         self._schedule_widget_rounding()
         self.after_idle(self._apply_page_minimum)
+
+    def _on_device_info_changed(self, *_: object) -> None:
+        """Add or remove the device row without leaving a blank spacer."""
+        if getattr(self, "_current_page", None) != "record":
+            return
+        self.after_idle(self._sync_recording_device_row)
+
+    def _sync_recording_device_row(self) -> None:
+        try:
+            should_show = bool(self.device_info_text.get().strip())
+            is_visible = bool(self.device_info_label.winfo_manager())
+            if should_show != is_visible:
+                self._show_page("record")
+        except tk.TclError:
+            # The application may be closing while the deferred state refresh
+            # is waiting in Tk's event queue.
+            return
 
     def _show_recording_page(self) -> None:
         self._show_page("record")
