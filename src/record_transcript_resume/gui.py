@@ -711,10 +711,10 @@ class RecorderApp(ctk.CTk):
         self.update_check_button.pack(side=tk.RIGHT, padx=(0, 6))
 
         support_card = settings_card(
-            self._settings_sections["provider"], "Apoie o Voice Notes", "Se o app ajudou você, um café via Pix é sempre bem-vindo — totalmente opcional.",
+            self._settings_sections["provider"], "Curtiu o Voice Notes?", "Se ele te salvou em uma reunião, aula ou ideia de última hora, um cafezinho ajuda a manter o projeto vivo. ☕",
         )
         ctk.CTkButton(
-            support_card, text="Pagar um café via Pix", command=self._open_pix_support,
+            support_card, text="Mandar um cafezinho ☕", command=self._open_pix_support,
             height=32, corner_radius=8, fg_color="#263550", hover_color="#34476B",
             text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
         ).pack(fill=tk.X, padx=14, pady=(0, 12))
@@ -1278,7 +1278,7 @@ class RecorderApp(ctk.CTk):
 
         window = ctk.CTkToplevel(self)
         self._pix_support_window = window
-        window.title("Pagar um café via Pix")
+        window.title("Bora de cafezinho?")
         window.resizable(False, False)
         window.transient(self)
         window.configure(fg_color=_COLORS["bg"])
@@ -1290,11 +1290,11 @@ class RecorderApp(ctk.CTk):
         )
         card.pack(fill=tk.BOTH, expand=True, padx=18, pady=18)
         ctk.CTkLabel(
-            card, text="☕ Apoie o Voice Notes", font=("Segoe UI", 16, "bold"),
+            card, text="☕ Curtiu o Voice Notes?", font=("Segoe UI", 16, "bold"),
             text_color=_COLORS["text"],
         ).pack(padx=20, pady=(20, 5))
         ctk.CTkLabel(
-            card, text="Se o aplicativo ajudou você, um café via Pix é\nsempre bem-vindo — e totalmente opcional.",
+            card, text="Se ele te deu uma mão, você pode mandar um\ncafezinho para o criador. Mas fica tranquilo:\nusar o app continua 100% livre.",
             font=("Segoe UI", 10), text_color=_COLORS["muted"], justify=tk.CENTER,
         ).pack(padx=20, pady=(0, 14))
 
