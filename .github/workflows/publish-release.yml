@@ -1,0 +1,75 @@
+name: Test and publish Windows release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-build-publish:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Install dependencies
+        shell: pwsh
+        run: python -m pip install --upgrade pip; python -m pip install -e ".[dev,build]"
+
+      - name: Run tests
+        shell: pwsh
+        run: python -m pytest -q
+
+      - name: Read release version
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path pyproject.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          "value=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Check whether this version was already published
+        id: existing_release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.VOICE_NOTES_RELEASES_TOKEN }}
+        run: |
+          gh release view "v${{ steps.version.outputs.value }}" --repo VictorJurado18/voice-notes-releases 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            "exists=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "exists=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Build installer
+        if: steps.existing_release.outputs.exists == 'false'
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_installer.ps1
+
+      - name: Publish public installer release
+        if: steps.existing_release.outputs.exists == 'false'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.VOICE_NOTES_RELEASES_TOKEN }}
+        run: |
+          $version = "${{ steps.version.outputs.value }}"
+          $installer = "dist\VoiceNotes-Setup-$version.exe"
+          if (-not (Test-Path $installer)) { throw "Installer was not generated: $installer" }
+          $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          $commit = (git rev-parse HEAD).Trim()
+          $notes = "Instalador Windows gerado automaticamente a partir do commit $commit.`n`nSHA-256: $hash"
+          gh release create "v$version" $installer --repo VictorJurado18/voice-notes-releases --title "Voice Notes v$version" --notes $notes

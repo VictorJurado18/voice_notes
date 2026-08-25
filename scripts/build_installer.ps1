@@ -34,7 +34,11 @@ Write-Host "Building standalone Voice Notes application..."
     --onedir `
     --windowed `
     --name "VoiceNotes" `
+    --icon (Join-Path $ProjectRoot "assets\voice-notes.ico") `
     --paths (Join-Path $ProjectRoot "src") `
+    --add-data "$(Join-Path $ProjectRoot 'assets\voice-notes.png');assets" `
+    --add-data "$(Join-Path $ProjectRoot 'pyproject.toml');." `
+    --add-data "$(Join-Path $ProjectRoot 'src\record_transcript_resume\resources');record_transcript_resume/resources" `
     --collect-all customtkinter `
     --collect-all faster_whisper `
     --collect-all ctranslate2 `

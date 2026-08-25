@@ -10,13 +10,15 @@ Você não precisa instalar Python, abrir terminal ou criar uma conta técnica p
 
 ### 1. Baixar e instalar
 
-1. Baixe o arquivo mais recente `VoiceNotes-Setup-x.y.z.exe` na página de download ou em **Releases**. Se você recebeu a pasta deste projeto, o instalador atual é [VoiceNotes-Setup-0.10.14.exe](dist/VoiceNotes-Setup-0.10.14.exe). Não baixe o código-fonte (`.zip`) para instalar o aplicativo.
+1. Baixe o arquivo mais recente `VoiceNotes-Setup-x.y.z.exe` nas [Releases públicas](https://github.com/VictorJurado18/voice-notes-releases/releases). Não baixe o código-fonte (`.zip`) para instalar o aplicativo.
 2. Clique duas vezes no instalador baixado.
 3. Mantenha marcada a opção **Iniciar automaticamente com o Windows** se quiser deixar o widget sempre disponível perto do relógio.
 4. Mantenha marcada a opção de instalar **Codex CLI e Claude Code** se quiser usar um deles para criar resumos. A preparação pode levar alguns minutos e requer internet.
 5. Clique em **Instalar** e, ao terminar, em **Abrir o widget Voice Notes**.
 
 O aplicativo é instalado só para o seu usuário, em `%LOCALAPPDATA%\Programs\Voice Notes`. Não exige conta de administrador, Python ou uma `.venv` no computador de destino.
+
+Quando houver uma nova versão publicada nas [Releases públicas de distribuição](https://github.com/VictorJurado18/voice-notes-releases/releases), o Voice Notes avisa em **Ajustes** › **Provider e API**. Você pode escolher **Atualizar agora** para baixar o instalador, verificar sua integridade, fechar o widget e iniciar a versão nova sem usar terminal.
 
 > O Windows pode mostrar uma tela de proteção ao abrir um instalador ainda não reconhecido. Confira se o arquivo veio da fonte esperada antes de escolher qualquer opção para continuar.
 
@@ -37,11 +39,11 @@ A transcrição é feita localmente pelo Whisper; ela funciona mesmo antes de vo
 
 | Opção | Quando escolher | Primeiro uso |
 |---|---|---|
-| **Codex** | Você usa uma conta OpenAI/Codex. | O app abre um Prompt de Comando para você fazer login normalmente. |
-| **Claude Code** | Você usa uma conta Claude Code. | O app abre o login normal do Claude Code. |
+| **Codex** | Você usa uma conta OpenAI/Codex. | Clique em **Conectar conta no navegador**; nenhuma janela de terminal é aberta. |
+| **Claude Code** | Você usa uma conta Claude Code. | Clique em **Conectar conta no navegador**; nenhuma janela de terminal é aberta. |
 | **API por token** | Você tem uma chave de uma API de IA. | Clique em **+ Novo Provider**, informe nome, URL, modelo e token. |
 
-O Codex é a opção inicial. O login pertence ao provider escolhido; o Voice Notes não pede sua senha dentro do widget.
+O Codex é a opção inicial. O login pertence ao provider escolhido; o Voice Notes não pede sua senha dentro do widget nem abre uma janela preta de terminal.
 
 Para APIs compatíveis com OpenAI, basta informar a URL base, o modelo e o token. Para outros serviços JSON, abra **Opções avançadas** e informe o formato da requisição e o caminho da resposta. O token é salvo no **Cofre de Credenciais do Windows**, não no arquivo de configuração.
 
@@ -90,7 +92,7 @@ Para ativar essa opção:
 1. Crie uma conta gratuita no Hugging Face.
 2. Acesse [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) e aceite as condições de uso do modelo.
 3. Crie um token de leitura no Hugging Face.
-4. No Voice Notes, abra **Ajustes** › **Falantes**, cole o token e habilite **Separar falantes**.
+4. No Voice Notes, abra **Ajustes** › **Falantes**, cole o token e habilite **Separar falantes**. Use **Mostrar/Ocultar**, **Copiar** e **Salvar token** quando precisar conferir ou reutilizar a chave.
 
 O modelo é baixado e executado localmente. O token fica no Cofre de Credenciais do Windows. Se um token autorizado já estiver salvo, a separação vem habilitada por padrão.
 
@@ -289,7 +291,7 @@ Antes de distribuir uma versão nova:
 1. Atualize a mesma versão em `pyproject.toml` e em `installer/VoiceNotes.iss`.
 2. Execute `pytest -q` na `.venv`.
 3. Gere o instalador e instale-o em uma conta Windows de teste, confirmando: inicialização pela bandeja, gravação, transcrição, resumo e abertura da Biblioteca.
-4. Publique o arquivo versionado como `VoiceNotes-Setup-x.y.z.exe` e informe a versão nas notas de release.
+4. Antes do merge, aumente a versão em `pyproject.toml` e `installer/VoiceNotes.iss`. Após o merge na `main`, o GitHub Actions testa, gera e publica automaticamente `VoiceNotes-Setup-x.y.z.exe` no repositório público `VictorJurado18/voice-notes-releases`.
 5. Quando houver distribuição pública, publique também um checksum SHA-256 e considere assinar o instalador. Isso reduz alertas do Microsoft Defender SmartScreen e permite ao usuário verificar a origem do arquivo.
 
 ### Estrutura do projeto
@@ -307,8 +309,8 @@ src/record_transcript_resume/
     library.py                # Descoberta de resultados salvos
     exports.py                # DOCX e PDF
     jobs.py                   # Fila e retomada de tarefas
+    resources/install_providers.ps1 # Node local, Codex CLI e Claude Code
 installer/
     VoiceNotes.iss            # Configuração do Inno Setup
-    install_providers.ps1     # Node local, Codex CLI e Claude Code
 tests/                        # Testes automatizados
 ```

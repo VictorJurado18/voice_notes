@@ -9,9 +9,9 @@ from unittest.mock import patch, MagicMock
 from record_transcript_resume.errors import SynthesisError
 from record_transcript_resume.synthesis import (
     SynthesisResult,
-    login_terminal_command,
     generate,
     provider_login_status,
+    start_provider_login,
 )
 
 
@@ -128,17 +128,22 @@ class SynthesisTests(unittest.TestCase):
         self.assertFalse(status.authenticated)
         self.assertEqual(run.call_args.args[0][1:], ["auth", "status"])
 
-    def test_codex_login_terminal_uses_normal_login_command(self) -> None:
-        command = login_terminal_command("codex")
+    def test_codex_login_starts_directly_without_cmd_shell(self) -> None:
+        with patch("record_transcript_resume.synthesis.subprocess.Popen") as popen:
+            start_provider_login("codex")
 
-        self.assertIn("codex", command.lower())
-        self.assertTrue(command.lower().endswith(" login"))
+        command = popen.call_args.args[0]
+        self.assertIn("codex", command[0].lower())
+        self.assertEqual(command[1:], ["login"])
+        self.assertNotIn("cmd.exe", " ".join(command).lower())
 
-    def test_claude_login_terminal_uses_normal_login_command(self) -> None:
-        command = login_terminal_command("claude")
+    def test_claude_login_starts_directly_without_cmd_shell(self) -> None:
+        with patch("record_transcript_resume.synthesis.subprocess.Popen") as popen:
+            start_provider_login("claude")
 
-        self.assertIn("claude", command.lower())
-        self.assertTrue(command.lower().endswith(" auth login"))
+        command = popen.call_args.args[0]
+        self.assertIn("claude", command[0].lower())
+        self.assertEqual(command[1:], ["auth", "login"])
 
 
 if __name__ == "__main__":

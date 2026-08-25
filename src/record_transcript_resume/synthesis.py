@@ -10,6 +10,7 @@ from typing import Literal
 
 from record_transcript_resume.errors import SynthesisError
 from record_transcript_resume.paths import app_data_dir
+from record_transcript_resume.windows_process import hidden_process_kwargs
 
 _TIMEOUT = 120
 SummaryProvider = Literal["codex", "claude", "api"]
@@ -111,6 +112,7 @@ def generate(
             timeout=_TIMEOUT,
             encoding="utf-8",
             env=_provider_environment(),
+            **hidden_process_kwargs(),
         )
     except FileNotFoundError as exc:
         raise SynthesisError(
@@ -200,6 +202,7 @@ def provider_login_status(provider: SummaryProvider) -> ProviderLoginStatus:
             timeout=12,
             encoding="utf-8",
             env=_provider_environment(),
+            **hidden_process_kwargs(),
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return ProviderLoginStatus(installed=False, authenticated=False)
@@ -213,22 +216,37 @@ def provider_login_status(provider: SummaryProvider) -> ProviderLoginStatus:
     return ProviderLoginStatus(installed=True, authenticated=result.returncode == 0)
 
 
-def login_terminal_command(provider: SummaryProvider) -> str:
-    """Return a ``cmd.exe`` command that opens the provider's normal login flow."""
-    executable = _cli_executable(provider)
-    node_dir = _bundled_node_dir()
-    prefix = f'set "PATH={node_dir};%PATH%" && ' if node_dir is not None else ""
-    # ``call`` is required when invoking a .cmd shim from another cmd instance.
-    action = "login" if provider == "codex" else "auth login"
-    return f'{prefix}call "{executable}" {action}'.rstrip()
+def start_provider_login(provider: SummaryProvider) -> subprocess.Popen[bytes]:
+    """Start the provider's browser authentication flow without a console window.
+
+    The command is deliberately opt-in from the widget.  It is not started at
+    launch because doing so used to create an unexpected black ``cmd`` window.
+    """
+    if provider not in ("codex", "claude"):
+        raise ValueError(f"Unsupported CLI provider: {provider}")
+    action = ["login"] if provider == "codex" else ["auth", "login"]
+    return subprocess.Popen(
+        [_cli_executable(provider), *action],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=_provider_environment(),
+        **hidden_process_kwargs(),
+    )
 
 
 def _bundled_cli_path(name: str) -> Path | None:
     extension = ".cmd" if os.name == "nt" else ""
     # npm places global command shims at the prefix root on Windows (rather
     # than in ``bin`` as it does on Unix-like platforms).
-    candidate = app_data_dir() / "tools" / "cli" / f"{name}{extension}"
-    return candidate if candidate.is_file() else None
+    cli_home = app_data_dir() / "tools" / "cli"
+    # Current installs use local npm packages; keep the old global-prefix
+    # location as a migration path for installs made by earlier versions.
+    candidates = (
+        cli_home / "node_modules" / ".bin" / f"{name}{extension}",
+        cli_home / f"{name}{extension}",
+    )
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
 
 
 def _bundled_node_dir() -> Path | None:
