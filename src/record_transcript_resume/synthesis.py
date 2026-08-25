@@ -77,6 +77,16 @@ class ProviderLoginStatus:
 
     installed: bool
     authenticated: bool | None
+    source: Literal["voice_notes", "system", "api", "missing"] = "missing"
+    executable: str = ""
+
+
+@dataclass(frozen=True)
+class CliResolution:
+    """A CLI executable and the installation that supplied it."""
+
+    executable: str
+    source: Literal["voice_notes", "system"]
 
 
 def generate(
@@ -116,7 +126,7 @@ def generate(
         )
     except FileNotFoundError as exc:
         raise SynthesisError(
-            f"{provider} CLI not found in PATH. Install it and authenticate before processing."
+            f"{provider} CLI not found in Voice Notes or the system PATH. Install it and authenticate before processing."
         ) from exc
     except subprocess.TimeoutExpired as exc:
         raise SynthesisError(
@@ -170,11 +180,11 @@ def _command_for(provider: SummaryProvider) -> list[str]:
 
 def _cli_executable(name: str) -> str:
     """Return a directly executable CLI path on every supported platform."""
-    bundled = _bundled_cli_path(name)
-    if bundled is not None:
-        return str(bundled)
+    resolution = _resolve_cli(name)
+    if resolution is not None:
+        return resolution.executable
     if os.name == "nt":
-        return shutil.which(f"{name}.cmd") or f"{name}.cmd"
+        return f"{name}.cmd"
     return name
 
 
@@ -189,10 +199,11 @@ def provider_login_status(provider: SummaryProvider) -> ProviderLoginStatus:
 
     if provider == "api":
         from record_transcript_resume.api_provider import has_token
-        return ProviderLoginStatus(installed=True, authenticated=has_token())
-    executable = _cli_executable(provider)
-    if not _command_exists(executable):
+        return ProviderLoginStatus(installed=True, authenticated=has_token(), source="api")
+    resolution = _resolve_cli(provider)
+    if resolution is None:
         return ProviderLoginStatus(installed=False, authenticated=False)
+    executable = resolution.executable
     status_args = ["login", "status"] if provider == "codex" else ["auth", "status"]
     try:
         result = subprocess.run(
@@ -212,8 +223,14 @@ def provider_login_status(provider: SummaryProvider) -> ProviderLoginStatus:
             authenticated = bool(payload.get("loggedIn"))
         except json.JSONDecodeError:
             authenticated = result.returncode == 0
-        return ProviderLoginStatus(installed=True, authenticated=authenticated)
-    return ProviderLoginStatus(installed=True, authenticated=result.returncode == 0)
+        return ProviderLoginStatus(
+            installed=True, authenticated=authenticated,
+            source=resolution.source, executable=executable,
+        )
+    return ProviderLoginStatus(
+        installed=True, authenticated=result.returncode == 0,
+        source=resolution.source, executable=executable,
+    )
 
 
 def start_provider_login(provider: SummaryProvider) -> subprocess.Popen[bytes]:
@@ -224,9 +241,12 @@ def start_provider_login(provider: SummaryProvider) -> subprocess.Popen[bytes]:
     """
     if provider not in ("codex", "claude"):
         raise ValueError(f"Unsupported CLI provider: {provider}")
+    resolution = _resolve_cli(provider)
+    if resolution is None:
+        raise FileNotFoundError(f"{provider} CLI was not found.")
     action = ["login"] if provider == "codex" else ["auth", "login"]
     return subprocess.Popen(
-        [_cli_executable(provider), *action],
+        [resolution.executable, *action],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -247,6 +267,24 @@ def _bundled_cli_path(name: str) -> Path | None:
         cli_home / f"{name}{extension}",
     )
     return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
+def _resolve_cli(name: str) -> CliResolution | None:
+    """Resolve a conventional system CLI first, then the private fallback.
+
+    Existing Codex and Claude installations belong to the person using the
+    computer, including their preferred version and authenticated account. A
+    private Voice Notes copy is only a recovery path for machines without one.
+    """
+    candidates = (f"{name}.cmd", name) if os.name == "nt" else (name,)
+    for candidate in candidates:
+        found = shutil.which(candidate)
+        if found:
+            return CliResolution(found, "system")
+    bundled = _bundled_cli_path(name)
+    if bundled is not None:
+        return CliResolution(str(bundled), "voice_notes")
+    return None
 
 
 def _bundled_node_dir() -> Path | None:
