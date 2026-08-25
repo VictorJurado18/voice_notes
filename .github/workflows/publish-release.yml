@@ -48,8 +48,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.VOICE_NOTES_RELEASES_TOKEN }}
         run: |
+          $ErrorActionPreference = "Continue"
           gh release view "v${{ steps.version.outputs.value }}" --repo VictorJurado18/voice-notes-releases 2>$null
-          if ($LASTEXITCODE -eq 0) {
+          $releaseExists = $LASTEXITCODE -eq 0
+          $ErrorActionPreference = "Stop"
+          if ($releaseExists) {
             "exists=true" >> $env:GITHUB_OUTPUT
           } else {
             "exists=false" >> $env:GITHUB_OUTPUT
