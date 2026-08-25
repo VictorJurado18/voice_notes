@@ -1401,9 +1401,9 @@ class RecorderApp(ctk.CTk):
         threading.Thread(target=self._apply_update_worker, args=(update,), daemon=True).start()
 
     def _apply_update_worker(self, update: object) -> None:
-        from record_transcript_resume.updates import download_and_start_update
+        from record_transcript_resume.updates import download_update
 
-        result = download_and_start_update(update)
+        result = download_update(update)
         self.after(0, self._on_update_applied, result)
 
     def _on_update_applied(self, result: object) -> None:
@@ -1411,9 +1411,25 @@ class RecorderApp(ctk.CTk):
         self.update_apply_button.configure(text="Atualizar agora")
         self.update_check_button.configure(state=tk.NORMAL)
         if getattr(result, "available", False):
-            self.after(500, self._on_close)
+            from record_transcript_resume.updates import start_downloaded_update
+
+            launch_result = start_downloaded_update(result)
+            self.update_hint.set(str(getattr(launch_result, "message", "Não foi possível iniciar a atualização.")))
+            if getattr(launch_result, "available", False):
+                self.after(150, self._close_for_update)
+                return
+            self.update_apply_button.configure(state=tk.NORMAL)
         else:
             self._check_for_updates()
+
+    def _close_for_update(self) -> None:
+        """Exit fully so the installer can replace the executable safely."""
+        if self._active_work_description() is not None:
+            self.update_hint.set("A atualização foi preparada, mas há uma atividade em andamento.")
+            self.update_apply_button.configure(state=tk.NORMAL)
+            return
+        self._tray.stop()
+        self.destroy()
 
     def _set_widget_mode(self, enabled: bool) -> None:
         if not enabled or self._widget_mode:
