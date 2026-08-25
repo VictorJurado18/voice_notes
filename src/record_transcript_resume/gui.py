@@ -58,6 +58,7 @@ _PROCESSING_PROFILES = {
     "Estudo": ("Estudo", "medium", False),
     "Plano de ação": ("Plano de ação", "small", True),
 }
+_PIX_KEY = "f608aca6-81f0-4c41-a77f-347777f75b0e"
 
 
 def _saved_huggingface_token() -> str:
@@ -256,6 +257,7 @@ class RecorderApp(ctk.CTk):
         self._provider_setup_attempted = False
         self._provider_status_check_running = False
         self._update_check_running = False
+        self._pix_support_window: ctk.CTkToplevel | None = None
         self._tray = _TrayController(self)
         self._tray_available = False
 
@@ -707,6 +709,15 @@ class RecorderApp(ctk.CTk):
             text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
         )
         self.update_check_button.pack(side=tk.RIGHT, padx=(0, 6))
+
+        support_card = settings_card(
+            self._settings_sections["provider"], "Apoie o Voice Notes", "Se o app ajudou você, um café via Pix é sempre bem-vindo — totalmente opcional.",
+        )
+        ctk.CTkButton(
+            support_card, text="Pagar um café via Pix", command=self._open_pix_support,
+            height=32, corner_radius=8, fg_color="#263550", hover_color="#34476B",
+            text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
+        ).pack(fill=tk.X, padx=14, pady=(0, 12))
 
         transcription_card = settings_card(self._settings_sections["transcription"], "Transcrição", "Idioma e qualidade do texto transcrito.")
         self._api_form_anchor = self.new_provider_button
@@ -1255,6 +1266,86 @@ class RecorderApp(ctk.CTk):
         self.clipboard_append(token)
         self.update()
         self.status.set("Token do Hugging Face copiado para a área de transferência.")
+
+    def _open_pix_support(self) -> None:
+        """Show an optional Pix support window without interrupting the workflow."""
+        existing = self._pix_support_window
+        if existing is not None and existing.winfo_exists():
+            existing.deiconify()
+            existing.lift()
+            existing.focus_force()
+            return
+
+        window = ctk.CTkToplevel(self)
+        self._pix_support_window = window
+        window.title("Pagar um café via Pix")
+        window.resizable(False, False)
+        window.transient(self)
+        window.configure(fg_color=_COLORS["bg"])
+        window.protocol("WM_DELETE_WINDOW", lambda: self._close_pix_support(window))
+
+        card = ctk.CTkFrame(
+            window, fg_color=_COLORS["surface"], corner_radius=16,
+            border_width=1, border_color=_COLORS["border"],
+        )
+        card.pack(fill=tk.BOTH, expand=True, padx=18, pady=18)
+        ctk.CTkLabel(
+            card, text="☕ Apoie o Voice Notes", font=("Segoe UI", 16, "bold"),
+            text_color=_COLORS["text"],
+        ).pack(padx=20, pady=(20, 5))
+        ctk.CTkLabel(
+            card, text="Se o aplicativo ajudou você, um café via Pix é\nsempre bem-vindo — e totalmente opcional.",
+            font=("Segoe UI", 10), text_color=_COLORS["muted"], justify=tk.CENTER,
+        ).pack(padx=20, pady=(0, 14))
+
+        try:
+            from PIL import Image
+
+            image = Image.open(_asset_path("pix-victor-nemeth-jurado.png"))
+            qr_code = ctk.CTkImage(light_image=image, dark_image=image, size=(210, 210))
+            qr_label = ctk.CTkLabel(card, text="", image=qr_code)
+            qr_label.image = qr_code
+            qr_label.pack(padx=20, pady=(0, 12))
+        except Exception:
+            ctk.CTkLabel(
+                card, text="QR Code indisponível neste momento.\nUse a chave Pix abaixo.",
+                font=("Segoe UI", 10), text_color=_COLORS["warning"], justify=tk.CENTER,
+            ).pack(padx=20, pady=(0, 12))
+
+        ctk.CTkLabel(
+            card, text="Victor Nemeth Jurado · São Paulo", font=("Segoe UI", 10, "bold"),
+            text_color=_COLORS["text"],
+        ).pack(padx=20, pady=(0, 8))
+        pix_key = ctk.CTkEntry(
+            card, height=34, width=315, corner_radius=8, fg_color="#0D1525",
+            border_color="#2A3A58", text_color=_COLORS["text"], font=("Consolas", 9),
+        )
+        pix_key.insert(0, _PIX_KEY)
+        pix_key.configure(state=tk.DISABLED)
+        pix_key.pack(padx=20, pady=(0, 10))
+        ctk.CTkButton(
+            card, text="Copiar chave Pix", command=self._copy_pix_key,
+            height=34, corner_radius=8, fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"],
+            text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
+        ).pack(fill=tk.X, padx=20, pady=(0, 20))
+
+        window.update_idletasks()
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - window.winfo_width()) // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - window.winfo_height()) // 2)
+        window.geometry(f"+{x}+{y}")
+        window.lift()
+        window.focus_force()
+
+    def _close_pix_support(self, window: ctk.CTkToplevel) -> None:
+        if window.winfo_exists():
+            window.destroy()
+        self._pix_support_window = None
+
+    def _copy_pix_key(self) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(_PIX_KEY)
+        self.update()
+        self.status.set("Chave Pix copiada para a área de transferência. Obrigado pelo apoio!")
 
     def _save_huggingface_token(self) -> None:
         token = self.huggingface_token.get().strip()

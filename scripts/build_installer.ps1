@@ -37,6 +37,7 @@ Write-Host "Building standalone Voice Notes application..."
     --icon (Join-Path $ProjectRoot "assets\voice-notes.ico") `
     --paths (Join-Path $ProjectRoot "src") `
     --add-data "$(Join-Path $ProjectRoot 'assets\voice-notes.png');assets" `
+    --add-data "$(Join-Path $ProjectRoot 'assets\pix-victor-nemeth-jurado.png');assets" `
     --add-data "$(Join-Path $ProjectRoot 'pyproject.toml');." `
     --add-data "$(Join-Path $ProjectRoot 'src\record_transcript_resume\resources');record_transcript_resume/resources" `
     --collect-all customtkinter `
