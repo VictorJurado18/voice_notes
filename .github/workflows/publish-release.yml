@@ -27,13 +27,17 @@ jobs:
         shell: pwsh
         run: choco install innosetup -y --no-progress
 
+      - name: Create build virtual environment
+        shell: pwsh
+        run: python -m venv .venv
+
       - name: Install dependencies
         shell: pwsh
-        run: python -m pip install --upgrade pip; python -m pip install -e ".[dev,build]"
+        run: .\.venv\Scripts\python.exe -m pip install --upgrade pip; .\.venv\Scripts\python.exe -m pip install -e ".[dev,build]"
 
       - name: Run tests
         shell: pwsh
-        run: python -m pytest -q
+        run: .\.venv\Scripts\python.exe -m pytest -q
 
       - name: Read release version
         id: version
