@@ -30,3 +30,15 @@ def test_discover_recordings_includes_summary_failure_for_recovery(tmp_path: Pat
 
     assert item.summary_available is False
     assert item.transcript_path is not None
+
+
+def test_discover_recordings_includes_audio_saved_before_processing(tmp_path: Path) -> None:
+    audio = tmp_path / "recording-20260825-101500.mp3"
+    audio.write_bytes(b"saved-audio")
+
+    item = discover_recordings(tmp_path)[0]
+
+    assert item.mp3_path == audio
+    assert item.transcript_path is None
+    assert item.summary_path is None
+    assert item.title == "Recording 20260825 101500"

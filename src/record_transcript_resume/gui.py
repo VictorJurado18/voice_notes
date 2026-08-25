@@ -58,6 +58,11 @@ _PROCESSING_PROFILES = {
     "Estudo": ("Estudo", "medium", False),
     "Plano de ação": ("Plano de ação", "small", True),
 }
+_RECORDING_OUTPUT_OPTIONS = (
+    ("Salvar só o áudio", "audio"),
+    ("Áudio + transcrição", "transcription"),
+    ("Áudio + transcrição + resumo", "both"),
+)
 _PIX_KEY = "f608aca6-81f0-4c41-a77f-347777f75b0e"
 
 
@@ -269,6 +274,10 @@ class RecorderApp(ctk.CTk):
         self.recording_limit_value = tk.StringVar(value="")
         self.recording_limit_unit = tk.StringVar(value="minutos")
         self.recording_limit_hint = tk.StringVar(value="Sem parada automática")
+        self.recording_output_mode = tk.StringVar(value="both")
+        self.recording_output_hint = tk.StringVar(
+            value="Padrão: salva o áudio, transcreve e cria um resumo. O áudio sempre é salvo primeiro."
+        )
         self._recording_deadline: float | None = None
         self.last_file = tk.StringVar(value="-")
         self.disk_warning = tk.StringVar(value="")
@@ -323,6 +332,7 @@ class RecorderApp(ctk.CTk):
         self.summary_provider.trace_add("write", self._on_provider_changed)
         self.pipeline_model.trace_add("write", self._on_model_changed)
         self.processing_profile.trace_add("write", self._on_processing_profile_changed)
+        self.recording_output_mode.trace_add("write", self._on_recording_output_mode_changed)
         self._set_widget_mode(True)
         self.after_idle(self._schedule_widget_rounding)
         self._refresh_provider_hint()
@@ -530,6 +540,27 @@ class RecorderApp(ctk.CTk):
         )
         self.recording_limit_selector.pack(side=tk.LEFT, padx=(8, 0))
         ctk.CTkFrame(capture_card, height=1, fg_color="#253552").pack(fill=tk.X, padx=14)
+        recording_output_panel = ctk.CTkFrame(capture_card, fg_color="transparent")
+        recording_output_panel.pack(fill=tk.X, padx=14, pady=(8, 6))
+        ctk.CTkLabel(
+            recording_output_panel, text="DEPOIS DE PARAR A GRAVAÇÃO", font=("Segoe UI", 9, "bold"),
+            text_color=_COLORS["muted"], anchor="w",
+        ).pack(fill=tk.X, pady=(0, 4))
+        self._recording_output_buttons: list[ctk.CTkRadioButton] = []
+        for label, value in _RECORDING_OUTPUT_OPTIONS:
+            button = ctk.CTkRadioButton(
+                recording_output_panel, text=label, variable=self.recording_output_mode, value=value,
+                font=("Segoe UI", 10, "bold"), text_color=_COLORS["text"],
+                fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"],
+                border_color="#5C6D91", radiobutton_width=18, radiobutton_height=18,
+            )
+            button.pack(anchor="w", pady=2)
+            self._recording_output_buttons.append(button)
+        ctk.CTkLabel(
+            recording_output_panel, textvariable=self.recording_output_hint, font=("Segoe UI", 9),
+            text_color=_COLORS["muted"], anchor="w", justify=tk.LEFT, wraplength=470,
+        ).pack(fill=tk.X, pady=(5, 0))
+        ctk.CTkFrame(capture_card, height=1, fg_color="#253552").pack(fill=tk.X, padx=14)
         summary_format_row = ctk.CTkFrame(capture_card, fg_color="transparent")
         profile_row = ctk.CTkFrame(capture_card, fg_color="transparent")
         profile_row.pack(fill=tk.X, padx=14, pady=(6, 0))
@@ -545,6 +576,11 @@ class RecorderApp(ctk.CTk):
             dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
         )
         self.profile_selector.pack(side=tk.LEFT)
+        ctk.CTkLabel(
+            capture_card,
+            text="Perfil é um atalho: ajusta formato do resumo, modelo Whisper e, quando possível, a separação de falantes. “Personalizado” mantém suas escolhas.",
+            font=("Segoe UI", 9), text_color=_COLORS["muted"], anchor="w", justify=tk.LEFT, wraplength=470,
+        ).pack(fill=tk.X, padx=14, pady=(3, 0))
         summary_format_row.pack(fill=tk.X, padx=14, pady=(6, 6))
         ctk.CTkLabel(
             summary_format_row, text="FORMATO DO RESUMO", font=("Segoe UI", 9, "bold"),
@@ -1155,6 +1191,14 @@ class RecorderApp(ctk.CTk):
             # Do not force a diarization attempt when no authorized token exists.
             self.diarize_speakers.set(bool(separate_speakers and self.huggingface_token.get().strip()))
 
+    def _on_recording_output_mode_changed(self, *_: object) -> None:
+        hints = {
+            "audio": "O áudio será finalizado e salvo. Nenhuma transcrição ou resumo será iniciado.",
+            "transcription": "O áudio será salvo primeiro e, depois, será criada apenas a transcrição.",
+            "both": "O áudio será salvo primeiro e, depois, serão criados a transcrição e o resumo.",
+        }
+        self.recording_output_hint.set(hints.get(self.recording_output_mode.get(), hints["both"]))
+
     def _check_provider_login(self) -> None:
         """Reflect provider readiness without ever opening a command prompt."""
         provider = _SUMMARY_PROVIDER_CODES.get(self.summary_provider.get(), "codex")
@@ -1721,6 +1765,8 @@ class RecorderApp(ctk.CTk):
     def _set_capture_preferences_state(self, state: str) -> None:
         for button in self._source_buttons:
             button.configure(state=state)
+        for button in self._recording_output_buttons:
+            button.configure(state=state)
         self.output_entry.configure(state=state)
         self.output_browse_button.configure(state=state)
         self.recording_limit_entry.configure(state=state)
@@ -1966,7 +2012,7 @@ class RecorderApp(ctk.CTk):
         ]
         self.library_listbox.delete(0, tk.END)
         for item in self._library_visible_items:
-            marker = "✓" if item.summary_available else "!"
+            marker = "✓" if item.summary_available else ("•" if item.transcript_path is None and item.summary_path is None else "!")
             stamp = item.modified_at.strftime("%d/%m %H:%M")
             self.library_listbox.insert(tk.END, f"{marker}  {item.title}  ·  {stamp}")
         if not self._library_visible_items:
@@ -1985,9 +2031,13 @@ class RecorderApp(ctk.CTk):
         item = self._selected_library_item()
         if item is None:
             return
-        summary_state = "resumo pronto" if item.summary_available else "resumo pendente ou com falha"
+        summary_state = (
+            "resumo pronto" if item.summary_available
+            else "somente áudio salvo" if item.transcript_path is None and item.summary_path is None
+            else "resumo pendente ou com falha"
+        )
         self.library_detail.set(f"{item.folder.name} · {summary_state}")
-        self.last_file.set(str(item.folder))
+        self.last_file.set(str(item.mp3_path or item.folder))
 
     def _open_selected_folder(self) -> None:
         item = self._selected_library_item()
@@ -2291,13 +2341,29 @@ class RecorderApp(ctk.CTk):
         self.recording_limit_hint.set("Sem parada automática")
         self._last_output = output_path
         self.last_file.set(str(output_path))
+        if not output_path.is_file():
+            self._show_stop_error(
+                "A gravação foi finalizada, mas o arquivo de áudio não foi encontrado na pasta escolhida. "
+                "Nenhum processamento será iniciado."
+            )
+            return
+        self.status.set("Áudio salvo com segurança. Preparando a próxima etapa…")
+        self._refresh_library()
+        output_mode = self.recording_output_mode.get()
+        if output_mode == "audio":
+            self.status.set("Áudio salvo com segurança. Nenhum processamento foi solicitado.")
+            self._restore_after_processing()
+            return
         lang_label = self.pipeline_language.get()
         lang_code = _LANG_CODES.get(lang_label, "pt")
         model_size = self.pipeline_model.get()
         provider = _SUMMARY_PROVIDER_CODES.get(self.summary_provider.get(), "codex")
         summary_template = _SUMMARY_TEMPLATE_CODES.get(self.summary_template.get(), "meeting")
-        log(f"GUI: starting pipeline | file={output_path.name} lang={lang_code} model={model_size} provider={provider}")
-        self._queue_pipeline(output_path, lang_code, model_size, provider, summary_template)
+        log(
+            f"GUI: áudio preservado antes do pipeline | file={output_path.name} "
+            f"mode={output_mode} lang={lang_code} model={model_size} provider={provider}"
+        )
+        self._queue_pipeline(output_path, lang_code, model_size, provider, summary_template, output_mode=output_mode)
 
     def _update_device_info(self) -> None:
         if self._service is None:
@@ -2800,13 +2866,19 @@ class RecorderApp(ctk.CTk):
         log(f"GUI: _on_pipeline_error | {message[:120]}")
         self.progressbar.stop()
         self.progressbar.pack_forget()
-        self.status.set("Pipeline error")
+        self.status.set("Processamento falhou — áudio preservado")
         if job_id is not None:
             self._job_store.update(job_id, status="failed", stage="Falhou — tente novamente", error=message)
         self._restore_after_processing()
         self._refresh_library()
         self._run_next_pending_job()
-        messagebox.showerror("Pipeline error", f"{message}\n\n{_log_hint()}")
+        saved_audio = self._last_output
+        if job_id is not None:
+            failed_job = next((job for job in self._job_store.list() if job.id == job_id), None)
+            if failed_job is not None:
+                saved_audio = failed_job.audio_path
+        location = f"\n\nSeu áudio foi preservado em:\n{saved_audio}" if saved_audio else ""
+        messagebox.showerror("Processamento não concluído", f"{message}{location}\n\n{_log_hint()}")
 
     # ── Equalizador ───────────────────────────────────────────────────────────
 
