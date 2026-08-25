@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import hashlib
@@ -15,6 +16,7 @@ from record_transcript_resume.windows_process import hidden_process_kwargs
 
 RELEASES_API_URL = "https://api.github.com/repos/VictorJurado18/voice-notes-releases/releases/latest"
 _SETUP_NAME = re.compile(r"^VoiceNotes-Setup-(?P<version>.+)\.exe$", re.IGNORECASE)
+_UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{B6E79191-B14A-49FD-B2D8-5A4642EC418C}_is1"
 
 
 def _installed_version() -> str:
@@ -30,6 +32,16 @@ def _installed_version() -> str:
             return match.group(1)
     except OSError:
         pass
+    if os.name == "nt":
+        try:
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _UNINSTALL_KEY) as key:
+                installed = str(winreg.QueryValueEx(key, "DisplayVersion")[0]).strip()
+                if re.fullmatch(r"\d+(?:\.\d+)*", installed):
+                    return installed
+        except (FileNotFoundError, OSError, ValueError):
+            pass
     return "0.0.0"
 
 
@@ -43,6 +55,7 @@ class ApplicationUpdate:
     version: str = ""
     download_url: str = ""
     sha256: str = ""
+    installer_path: str = ""
 
 
 def _version_key(value: str) -> tuple[int, ...]:
@@ -101,8 +114,8 @@ def check_for_updates() -> ApplicationUpdate:
         return ApplicationUpdate(False, "Não foi possível consultar atualizações agora. Verifique sua conexão.")
 
 
-def download_and_start_update(update: ApplicationUpdate) -> ApplicationUpdate:
-    """Download the published setup and start it hidden after user confirmation."""
+def download_update(update: ApplicationUpdate) -> ApplicationUpdate:
+    """Download and verify the setup before the graphical app closes."""
     if not update.available or not update.download_url or not update.version:
         return ApplicationUpdate(False, "Nenhuma atualização válida foi selecionada.")
     try:
@@ -118,14 +131,63 @@ def download_and_start_update(update: ApplicationUpdate) -> ApplicationUpdate:
             if actual_hash.lower() != update.sha256.lower():
                 installer.unlink(missing_ok=True)
                 return ApplicationUpdate(False, "O arquivo baixado não passou na verificação de segurança.")
+        return ApplicationUpdate(
+            True,
+            f"Atualização {update.version} pronta para instalar.",
+            update.version,
+            update.download_url,
+            update.sha256,
+            str(installer),
+        )
+    except (error.URLError, OSError):
+        return ApplicationUpdate(False, "Não foi possível baixar a atualização.")
+
+
+def start_downloaded_update(update: ApplicationUpdate) -> ApplicationUpdate:
+    """Start a hidden helper that waits for this process before opening Setup.
+
+    Inno Setup cannot reliably replace the running executable.  The helper is
+    deliberately detached and has no visible console; it waits for Voice Notes
+    to exit, installs the verified file, then opens the updated application.
+    """
+    installer = Path(update.installer_path)
+    if not update.available or not installer.is_file():
+        return ApplicationUpdate(False, "O instalador baixado não foi encontrado.")
+    try:
+        updates_dir = installer.parent
+        launcher = updates_dir / "start-update.cmd"
+        install_log = updates_dir / f"install-{update.version}.log"
+        launcher.write_text(
+            "\r\n".join((
+                "@echo off",
+                "setlocal",
+                "set \"PARENT_PID=%~1\"",
+                "set \"INSTALLER=%~2\"",
+                "set \"INSTALL_LOG=%~3\"",
+                "set \"APP_EXE=%~4\"",
+                ":wait_for_voice_notes",
+                "tasklist /FI \"PID eq %PARENT_PID%\" /NH | findstr /R /C:\"%PARENT_PID%\" >nul",
+                "if not errorlevel 1 (",
+                "  timeout /t 1 /nobreak >nul",
+                "  goto wait_for_voice_notes",
+                ")",
+                "\"%INSTALLER%\" /VERYSILENT /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /LOG=\"%INSTALL_LOG%\"",
+                "set \"EXIT_CODE=%ERRORLEVEL%\"",
+                "> \"%INSTALL_LOG%.launcher-exit-code.txt\" echo %EXIT_CODE%",
+                "if \"%EXIT_CODE%\"==\"0\" start \"\" \"%APP_EXE%\"",
+                "del \"%~f0\"",
+                "",
+            )),
+            encoding="ascii",
+        )
         subprocess.Popen(
-            [str(installer), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"],
-            cwd=str(installer.parent),
+            ["cmd.exe", "/d", "/c", str(launcher), str(os.getpid()), str(installer), str(install_log), str(Path(sys.executable))],
+            cwd=str(updates_dir),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             **hidden_process_kwargs(),
         )
-        return ApplicationUpdate(True, f"Atualizando para a versão {update.version}…", update.version, update.download_url, update.sha256)
-    except (error.URLError, OSError):
-        return ApplicationUpdate(False, "Não foi possível baixar ou iniciar a atualização.")
+        return ApplicationUpdate(True, "Fechando o Voice Notes para instalar a atualização…", update.version)
+    except OSError:
+        return ApplicationUpdate(False, "Não foi possível preparar a instalação da atualização.")

@@ -4,11 +4,14 @@ import json
 import os
 import subprocess
 import unittest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from record_transcript_resume.errors import SynthesisError
 from record_transcript_resume.synthesis import (
+    CliResolution,
     SynthesisResult,
+    _cli_executable,
     generate,
     provider_login_status,
     start_provider_login,
@@ -107,29 +110,34 @@ class SynthesisTests(unittest.TestCase):
     def test_codex_login_status_uses_noninteractive_command(self) -> None:
         proc = _make_completed_process("Logged in")
         with (
-            patch("record_transcript_resume.synthesis._command_exists", return_value=True),
+            patch("record_transcript_resume.synthesis._resolve_cli", return_value=CliResolution("C:/Voice Notes/codex.cmd", "voice_notes")),
             patch("record_transcript_resume.synthesis.subprocess.run", return_value=proc) as run,
         ):
             status = provider_login_status("codex")
 
         self.assertTrue(status.installed)
         self.assertTrue(status.authenticated)
+        self.assertEqual(status.source, "voice_notes")
         self.assertEqual(run.call_args.args[0][1:], ["login", "status"])
 
     def test_claude_login_status_reads_cli_response_without_sending_a_prompt(self) -> None:
         proc = _make_completed_process('{"loggedIn": false}', returncode=1)
         with (
-            patch("record_transcript_resume.synthesis._command_exists", return_value=True),
+            patch("record_transcript_resume.synthesis._resolve_cli", return_value=CliResolution("C:/tools/claude.cmd", "system")),
             patch("record_transcript_resume.synthesis.subprocess.run", return_value=proc) as run,
         ):
             status = provider_login_status("claude")
 
         self.assertTrue(status.installed)
         self.assertFalse(status.authenticated)
+        self.assertEqual(status.source, "system")
         self.assertEqual(run.call_args.args[0][1:], ["auth", "status"])
 
     def test_codex_login_starts_directly_without_cmd_shell(self) -> None:
-        with patch("record_transcript_resume.synthesis.subprocess.Popen") as popen:
+        with (
+            patch("record_transcript_resume.synthesis._resolve_cli", return_value=CliResolution("C:/Voice Notes/codex.cmd", "voice_notes")),
+            patch("record_transcript_resume.synthesis.subprocess.Popen") as popen,
+        ):
             start_provider_login("codex")
 
         command = popen.call_args.args[0]
@@ -138,12 +146,42 @@ class SynthesisTests(unittest.TestCase):
         self.assertNotIn("cmd.exe", " ".join(command).lower())
 
     def test_claude_login_starts_directly_without_cmd_shell(self) -> None:
-        with patch("record_transcript_resume.synthesis.subprocess.Popen") as popen:
+        with (
+            patch("record_transcript_resume.synthesis._resolve_cli", return_value=CliResolution("C:/Voice Notes/claude.cmd", "voice_notes")),
+            patch("record_transcript_resume.synthesis.subprocess.Popen") as popen,
+        ):
             start_provider_login("claude")
 
         command = popen.call_args.args[0]
         self.assertIn("claude", command[0].lower())
         self.assertEqual(command[1:], ["auth", "login"])
+
+    def test_system_cli_wins_over_private_copy(self) -> None:
+        with (
+            patch("record_transcript_resume.synthesis._bundled_cli_path", return_value=Path("C:/Voice Notes/tools/cli/codex.cmd")),
+            patch("record_transcript_resume.synthesis.shutil.which", return_value="C:/Program Files/Codex/codex.cmd"),
+        ):
+            executable = _cli_executable("codex")
+
+        self.assertEqual(executable, "C:/Program Files/Codex/codex.cmd")
+
+    def test_private_cli_is_used_when_system_copy_is_missing(self) -> None:
+        with (
+            patch("record_transcript_resume.synthesis._bundled_cli_path", return_value=Path("C:/Voice Notes/tools/cli/codex.cmd")),
+            patch("record_transcript_resume.synthesis.shutil.which", side_effect=[None, None]),
+        ):
+            executable = _cli_executable("codex")
+
+        self.assertEqual(executable, "C:\\Voice Notes\\tools\\cli\\codex.cmd")
+
+    def test_system_executable_is_used_when_private_copy_is_missing(self) -> None:
+        with (
+            patch("record_transcript_resume.synthesis._bundled_cli_path", return_value=None),
+            patch("record_transcript_resume.synthesis.shutil.which", side_effect=[None, "C:/Program Files/Codex/codex.exe"]),
+        ):
+            executable = _cli_executable("codex")
+
+        self.assertEqual(executable, "C:/Program Files/Codex/codex.exe")
 
 
 if __name__ == "__main__":

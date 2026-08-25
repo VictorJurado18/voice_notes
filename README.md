@@ -28,6 +28,7 @@ O Voice Notes funciona como um widget, sem a barra branca tradicional das janela
 
 - Arraste a área superior para mover o widget pela tela.
 - Arraste o próprio canto inferior direito para alterar o tamanho. A cápsula, os controles e a tipografia crescem ou diminuem juntos, mantendo a proporção e os cantos arredondados.
+- Quando uma página tiver mais opções do que a altura disponível, role o conteúdo dentro do widget. O cabeçalho, a navegação e os botões de gravar/parar permanecem acessíveis.
 - Clique em **Minimizar** para transformar o app em uma etiqueta discreta. Ela reduz no mesmo local do widget, continua sobre os outros programas, mostra o estado e o nível de áudio e oferece **Iniciar** e **Parar**.
 - Arraste a área informativa da etiqueta para movê-la. Um clique curto nessa área restaura o widget completo no tamanho anterior.
 - Clique em **Ocultar** para escondê-lo de verdade e continuar usando o menu do ícone do Voice Notes perto do relógio. Ele pode estar dentro da seta `^` de **itens ocultos**.

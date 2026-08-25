@@ -47,6 +47,20 @@ def discover_recordings(output_dir: Path) -> list[LibraryItem]:
                 summary_available=summary_available,
             )
         )
+    for mp3 in output_dir.glob("*.mp3"):
+        # Audio is deliberately discoverable before any AI work begins.  This
+        # also keeps a failed transcription visible and easy to open.
+        items.append(
+            LibraryItem(
+                folder=output_dir,
+                mp3_path=mp3,
+                transcript_path=None,
+                summary_path=None,
+                title=mp3.stem.replace("-", " ").replace("_", " ").title(),
+                modified_at=datetime.fromtimestamp(mp3.stat().st_mtime),
+                summary_available=False,
+            )
+        )
     return sorted(items, key=lambda item: item.modified_at, reverse=True)
 
 
