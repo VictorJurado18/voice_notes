@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from unittest.mock import patch
 
 from record_transcript_resume.updates import APP_VERSION, ApplicationUpdate, check_for_updates, start_downloaded_update
 
 
 def test_installed_version_matches_project_metadata() -> None:
-    assert APP_VERSION == "0.10.17"
+    contents = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    expected = re.search(r'^version\s*=\s*"([^"]+)"', contents, re.MULTILINE)
+    assert expected is not None
+    assert APP_VERSION == expected.group(1)
+
+
+def _next_patch_version(version: str) -> str:
+    major, minor, patch = version.split(".")
+    return f"{major}.{minor}.{int(patch) + 1}"
 
 
 def _release(version: str, asset_name: str | None = None) -> dict[str, object]:
@@ -21,20 +31,21 @@ def _release(version: str, asset_name: str | None = None) -> dict[str, object]:
 
 
 def test_check_for_updates_offers_a_newer_published_installer() -> None:
-    with patch("record_transcript_resume.updates._latest_release_payload", return_value=_release("0.10.18")):
+    newer_version = _next_patch_version(APP_VERSION)
+    with patch("record_transcript_resume.updates._latest_release_payload", return_value=_release(newer_version)):
         result = check_for_updates()
 
     assert result == ApplicationUpdate(
         available=True,
-        message="Nova versão disponível: 0.10.18.",
-        version="0.10.18",
+        message=f"Nova versão disponível: {newer_version}.",
+        version=newer_version,
         download_url="https://example.test/VoiceNotes-Setup.exe",
         sha256="abc123",
     )
 
 
 def test_check_for_updates_ignores_current_or_older_release() -> None:
-    with patch("record_transcript_resume.updates._latest_release_payload", return_value=_release("0.10.17")):
+    with patch("record_transcript_resume.updates._latest_release_payload", return_value=_release(APP_VERSION)):
         result = check_for_updates()
 
     assert result.available is False
@@ -42,7 +53,7 @@ def test_check_for_updates_ignores_current_or_older_release() -> None:
 
 
 def test_check_for_updates_requires_the_windows_setup_asset() -> None:
-    with patch("record_transcript_resume.updates._latest_release_payload", return_value=_release("0.10.17", "source.zip")):
+    with patch("record_transcript_resume.updates._latest_release_payload", return_value=_release(APP_VERSION, "source.zip")):
         result = check_for_updates()
 
     assert result.available is False
