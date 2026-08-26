@@ -74,7 +74,7 @@ def test_update_launcher_waits_for_the_app_to_exit_before_running_setup(tmp_path
     command = start_process.call_args.args[0]
     assert command[:4] == ["cmd.exe", "/d", "/s", "/c"]
     assert command[4].startswith('call "')
-    launcher = tmp_path / "start-update.cmd"
+    launcher = updates_dir / "start-update.cmd"
     assert launcher.is_file()
     launcher_contents = launcher.read_text(encoding="ascii")
     assert ":wait_for_voice_notes" in launcher_contents
