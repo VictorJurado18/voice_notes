@@ -180,8 +180,11 @@ def start_downloaded_update(update: ApplicationUpdate) -> ApplicationUpdate:
             )),
             encoding="ascii",
         )
+        launcher_command = "call " + subprocess.list2cmdline(
+            [str(launcher), str(os.getpid()), str(installer), str(install_log), str(Path(sys.executable))]
+        )
         subprocess.Popen(
-            ["cmd.exe", "/d", "/c", str(launcher), str(os.getpid()), str(installer), str(install_log), str(Path(sys.executable))],
+            ["cmd.exe", "/d", "/s", "/c", launcher_command],
             cwd=str(updates_dir),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
