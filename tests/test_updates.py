@@ -61,7 +61,9 @@ def test_check_for_updates_requires_the_windows_setup_asset() -> None:
 
 
 def test_update_launcher_waits_for_the_app_to_exit_before_running_setup(tmp_path) -> None:
-    installer = tmp_path / "VoiceNotes-Setup-0.10.17.exe"
+    updates_dir = tmp_path / "Voice Notes updates"
+    updates_dir.mkdir()
+    installer = updates_dir / "VoiceNotes-Setup-0.10.17.exe"
     installer.write_bytes(b"installer")
     update = ApplicationUpdate(True, "Pronto", "0.10.17", installer_path=str(installer))
 
@@ -70,8 +72,9 @@ def test_update_launcher_waits_for_the_app_to_exit_before_running_setup(tmp_path
 
     assert result.available is True
     command = start_process.call_args.args[0]
-    assert command[:3] == ["cmd.exe", "/d", "/c"]
-    launcher = tmp_path / "start-update.cmd"
+    assert command[:4] == ["cmd.exe", "/d", "/s", "/c"]
+    assert command[4].startswith('call "')
+    launcher = updates_dir / "start-update.cmd"
     assert launcher.is_file()
     launcher_contents = launcher.read_text(encoding="ascii")
     assert ":wait_for_voice_notes" in launcher_contents
