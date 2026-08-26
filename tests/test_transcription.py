@@ -33,6 +33,7 @@ class TranscriptionTests(unittest.TestCase):
         self.assertAlmostEqual(result[0].start, 0.0)
         self.assertAlmostEqual(result[0].end, 3.5)
         self.assertEqual(result[0].text, "Ola mundo")
+        fake_model.transcribe.assert_called_once_with("fake.mp3", language="pt", vad_filter=True)
 
     def test_transcribe_usa_model_size_correto(self) -> None:
         fake_model = MagicMock()

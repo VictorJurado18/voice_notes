@@ -4,10 +4,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import re
+import time
 
 from record_transcript_resume.errors import SynthesisError, TranscriptionError
 from record_transcript_resume.synthesis import DEFAULT_PROVIDER, DEFAULT_TEMPLATE, SummaryProvider, SummaryTemplate, SynthesisResult, generate
 from record_transcript_resume.transcription import Segment, assign_speakers, segments_to_markdown, transcribe
+
+
+def _elapsed(started: float) -> str:
+    return f"{time.monotonic() - started:.1f}s"
 
 
 @dataclass(frozen=True)
@@ -29,6 +34,7 @@ def run(
     diarize_speakers: bool = False,
     huggingface_token: str = "",
     output_mode: str = "both",
+    transcription_provider: str = "local",
 ) -> PipelineResult:
     def _notify(msg: str) -> None:
         if callable(on_status):
@@ -40,17 +46,25 @@ def run(
 
     # Step 1: transcription — if it fails, do not move the MP3
     _notify("Transcribing audio...")
-    segments: list[Segment] = transcribe(mp3_path, language=language, model_size=model_size)
+    transcription_started = time.monotonic()
+    segments: list[Segment] = transcribe(
+        mp3_path, language=language, model_size=model_size, provider=transcription_provider,
+    )
+    from record_transcript_resume.log import log
+    log(f"Pipeline transcription finished | elapsed={_elapsed(transcription_started)} model={model_size}")
     if diarize_speakers:
         _notify("Identifying speakers...")
+        diarization_started = time.monotonic()
         from record_transcript_resume.diarization import diarize
         segments = assign_speakers(segments, diarize(mp3_path, huggingface_token))
+        log(f"Pipeline speaker separation finished | elapsed={_elapsed(diarization_started)}")
     transcript_text = segments_to_markdown(segments)
 
     synthesis = SynthesisResult(folder_name="", summary_md="")
     if output_mode != "transcription":
         # Synthesis failure is saved as a helpful fallback, preserving the audio.
         _notify("Generating summary...")
+        synthesis_started = time.monotonic()
         try:
             synthesis = generate(
                 transcript_text,
@@ -63,6 +77,7 @@ def run(
                 folder_name="",
                 summary_md=_fallback_summary(provider, str(exc)),
             )
+        log(f"Pipeline summary finished | elapsed={_elapsed(synthesis_started)}")
 
     # Step 3: resolve folder name and create it
     folder = _resolve_folder(output_dir, synthesis.folder_name, date_str, mp3_path)

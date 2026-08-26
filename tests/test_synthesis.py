@@ -92,6 +92,21 @@ class SynthesisTests(unittest.TestCase):
         self.assertIn("## Próximos estudos", prompt)
         self.assertIn("Idioma obrigatório da resposta: português do Brasil", prompt)
 
+    def test_generate_uses_saved_custom_profile(self) -> None:
+        from record_transcript_resume.summary_profiles import SummaryProfile
+
+        proc = _make_completed_process(json.dumps({"folder_name": "assessment", "summary_md": "# Assessment"}))
+        profile = SummaryProfile(id="assessment", name="Assessment", instructions="Agrupe por competência e cite evidências.")
+        with (
+            patch("record_transcript_resume.summary_profiles.get_profile", return_value=profile),
+            patch("record_transcript_resume.synthesis.subprocess.run", return_value=proc) as run,
+        ):
+            generate("Transcription.", "2026-05-21", summary_template="custom:assessment")
+
+        prompt = run.call_args.kwargs["input"]
+        self.assertIn("Formato do resumo: Assessment", prompt)
+        self.assertIn("Agrupe por competência", prompt)
+
     def test_generate_raises_when_provider_cli_fails(self) -> None:
         proc = _make_completed_process("authentication failed", returncode=1)
         proc.stderr = "authentication failed"
@@ -106,6 +121,15 @@ class SynthesisTests(unittest.TestCase):
 
         self.assertEqual(result.folder_name, "api-summary")
         self.assertTrue(api.called)
+
+    def test_generate_delegates_to_selected_saved_api_provider(self) -> None:
+        payload = json.dumps({"folder_name": "api-summary", "summary_md": "# Resumo"})
+        with patch("record_transcript_resume.api_provider.generate", return_value=payload) as api:
+            generate("Transcription.", "2026-05-21", provider="api:provider-123")
+
+        api.assert_called_once()
+        self.assertEqual(api.call_args.args[0].startswith("Você recebeu a transcrição"), True)
+        self.assertEqual(api.call_args.kwargs["provider_id"], "provider-123")
 
     def test_codex_login_status_uses_noninteractive_command(self) -> None:
         proc = _make_completed_process("Logged in")

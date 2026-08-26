@@ -37,10 +37,19 @@ class Segment:
 
 
 def transcribe(
-    audio_path: Path, language: str = "pt", model_size: str = "small"
+    audio_path: Path, language: str = "pt", model_size: str = "small", provider: str = "local"
 ) -> list[Segment]:
     if not audio_path.is_file():
         raise TranscriptionError(f"Audio file not found: {audio_path}")
+    if provider.startswith("api:"):
+        from record_transcript_resume.api_provider import transcribe_audio
+
+        try:
+            return [segment for segment in transcribe_audio(audio_path, language, provider.removeprefix("api:")) if isinstance(segment, Segment)]
+        except Exception as exc:
+            raise TranscriptionError(str(exc)) from exc
+    if provider != "local":
+        raise TranscriptionError(f"Unsupported transcription provider: {provider}")
 
     try:
         from faster_whisper import WhisperModel
@@ -54,7 +63,12 @@ def transcribe(
 
     try:
         model = WhisperModel(model_size, device="cpu", compute_type="int8")
-        raw_segments, _ = model.transcribe(str(audio_path), language=language)
+        # Meetings often contain long pauses. The library's conservative VAD
+        # skips only silence longer than two seconds, preserving spoken content
+        # and timestamps while avoiding needless CPU inference over silence.
+        raw_segments, _ = model.transcribe(
+            str(audio_path), language=language, vad_filter=True,
+        )
         return [Segment(start=s.start, end=s.end, text=s.text.strip()) for s in raw_segments]
     except Exception as exc:
         raise TranscriptionError(f"Transcription failed: {exc}") from exc

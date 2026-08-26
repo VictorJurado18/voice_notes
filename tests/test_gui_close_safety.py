@@ -45,6 +45,6 @@ def test_close_hides_widget_without_interrupting_pipeline() -> None:
     app.destroy.assert_not_called()
 
 
-def test_saved_huggingface_token_enables_speaker_separation_by_default() -> None:
-    assert _diarization_enabled_by_default("hf_example") is True
+def test_saved_huggingface_token_keeps_speaker_separation_disabled_by_default() -> None:
+    assert _diarization_enabled_by_default("hf_example") is False
     assert _diarization_enabled_by_default("  ") is False
