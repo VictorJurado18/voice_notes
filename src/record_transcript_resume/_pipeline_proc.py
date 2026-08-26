@@ -9,8 +9,8 @@ from pathlib import Path
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) not in {4, 5, 6, 7, 8}:
-        print(json.dumps({"type": "error", "msg": "args: <mp3> <output_dir> <language> <model_size> [provider] [template] [diarize] [output_mode]"}), flush=True)
+    if len(args) not in {4, 5, 6, 7, 8, 9}:
+        print(json.dumps({"type": "error", "msg": "args: <mp3> <output_dir> <language> <model_size> [provider] [template] [diarize] [output_mode] [transcription_provider]"}), flush=True)
         return 1
 
     mp3_path = Path(args[0])
@@ -21,6 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     summary_template = args[5] if len(args) >= 6 else "meeting"
     diarize_speakers = len(args) >= 7 and args[6] == "1"
     output_mode = args[7] if len(args) >= 8 else "both"
+    transcription_provider = args[8] if len(args) >= 9 else "local"
 
     def on_status(msg: str) -> None:
         print(json.dumps({"type": "status", "msg": msg}), flush=True)
@@ -29,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
         from record_transcript_resume.pipeline import run
         result = run(
             mp3_path, output_dir, language, model_size, provider, summary_template,
-            on_status, diarize_speakers, os.environ.get("VOICE_NOTES_HF_TOKEN", ""), output_mode,
+            on_status, diarize_speakers, os.environ.get("VOICE_NOTES_HF_TOKEN", ""), output_mode, transcription_provider,
         )
         print(json.dumps({
             "type": "done",

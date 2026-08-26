@@ -13,8 +13,8 @@ from record_transcript_resume.paths import app_data_dir
 from record_transcript_resume.windows_process import hidden_process_kwargs
 
 _TIMEOUT = 120
-SummaryProvider = Literal["codex", "claude", "api"]
-SummaryTemplate = Literal["meeting", "class", "interview", "sales", "brainstorm", "executive", "study", "action_plan"]
+SummaryProvider = str
+SummaryTemplate = str
 SUPPORTED_PROVIDERS: tuple[SummaryProvider, ...] = ("codex", "claude", "api")
 DEFAULT_PROVIDER: SummaryProvider = "codex"
 DEFAULT_TEMPLATE: SummaryTemplate = "meeting"
@@ -46,6 +46,7 @@ Você recebeu a transcrição de uma conversa gravada.
 
 Data da gravação: {date}
 Formato do resumo: {template_label}
+{profile_instructions}
 
 Transcrição:
 {transcription}
@@ -55,7 +56,7 @@ Idioma obrigatório da resposta: português do Brasil. Escreva todo o título, t
 Responda SOMENTE com um objeto JSON válido, sem bloco de markdown e sem explicação:
 {{"folder_name": "<nome-curto-em-kebab-case-sem-data>", "summary_md": "<conteúdo-completo-do-resumo-em-markdown-em-português>"}}
 
-O campo summary_md deve ter um título conciso e exatamente estas seções em markdown:
+O campo summary_md deve ter um título conciso e as seguintes seções em markdown:
 {sections}\
 """
 
@@ -95,21 +96,21 @@ def generate(
     provider: SummaryProvider = DEFAULT_PROVIDER,
     summary_template: SummaryTemplate = DEFAULT_TEMPLATE,
 ) -> SynthesisResult:
-    if provider not in SUPPORTED_PROVIDERS:
+    is_api_provider = provider == "api" or provider.startswith("api:")
+    if provider not in SUPPORTED_PROVIDERS and not is_api_provider:
         raise SynthesisError(f"Unsupported summary provider: {provider}")
-    if summary_template not in SUMMARY_TEMPLATE_LABELS:
-        raise SynthesisError(f"Unsupported summary template: {summary_template}")
-
-    sections = "\n".join(f"## {section}" for section in _TEMPLATE_SECTIONS[summary_template])
+    template_label, sections, profile_instructions = _summary_structure(summary_template)
     prompt = _PROMPT_TEMPLATE.format(
         date=date_str,
-        template_label=SUMMARY_TEMPLATE_LABELS[summary_template],
+        template_label=template_label,
         transcription=transcription_text,
+        profile_instructions=profile_instructions,
         sections=sections,
     )
-    if provider == "api":
+    if is_api_provider:
         from record_transcript_resume.api_provider import generate as generate_api
-        stdout = generate_api(prompt)
+        provider_id = provider.partition(":")[2] or None
+        stdout = generate_api(prompt, provider_id=provider_id)
         return _result_from_stdout(stdout)
     command = _command_for(provider)
 
@@ -140,6 +141,29 @@ def generate(
         )
 
     return _result_from_stdout(result.stdout.strip())
+
+
+def _summary_structure(summary_template: SummaryTemplate) -> tuple[str, str, str]:
+    """Resolve built-in templates and persisted custom profiles at generation time."""
+    if summary_template in SUMMARY_TEMPLATE_LABELS:
+        sections = "\n".join(f"## {section}" for section in _TEMPLATE_SECTIONS[summary_template])
+        return SUMMARY_TEMPLATE_LABELS[summary_template], sections, ""
+    if summary_template.startswith("custom:"):
+        from record_transcript_resume.summary_profiles import get_profile
+
+        profile = get_profile(summary_template.removeprefix("custom:"))
+        if profile is None:
+            raise SynthesisError("O perfil personalizado selecionado não está mais disponível.")
+        base_sections = _TEMPLATE_SECTIONS.get(profile.base_template, _TEMPLATE_SECTIONS[DEFAULT_TEMPLATE])
+        sections = "\n".join(f"## {section}" for section in base_sections)
+        instructions = (
+            "\nPerfil personalizado escolhido pelo usuário:\n"
+            f"{profile.instructions}\n"
+            "Use a estrutura solicitada acima. As seções abaixo são um ponto de partida; "
+            "substitua, adicione ou reorganize-as quando isso for necessário para respeitar o perfil.\n"
+        )
+        return profile.name, sections, instructions
+    raise SynthesisError(f"Unsupported summary template: {summary_template}")
 
 
 def _result_from_stdout(stdout: str) -> SynthesisResult:
@@ -194,12 +218,14 @@ def provider_login_status(provider: SummaryProvider) -> ProviderLoginStatus:
     Both supported CLIs expose a non-interactive status command, so opening the
     widget never sends transcription content or consumes summary credits.
     """
-    if provider not in SUPPORTED_PROVIDERS:
+    is_api_provider = provider == "api" or provider.startswith("api:")
+    if provider not in SUPPORTED_PROVIDERS and not is_api_provider:
         raise ValueError(f"Unsupported summary provider: {provider}")
 
-    if provider == "api":
+    if is_api_provider:
         from record_transcript_resume.api_provider import has_token
-        return ProviderLoginStatus(installed=True, authenticated=has_token(), source="api")
+        provider_id = provider.partition(":")[2] or None
+        return ProviderLoginStatus(installed=True, authenticated=has_token(provider_id), source="api")
     resolution = _resolve_cli(provider)
     if resolution is None:
         return ProviderLoginStatus(installed=False, authenticated=False)

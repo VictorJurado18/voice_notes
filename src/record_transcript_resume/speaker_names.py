@@ -40,3 +40,23 @@ def apply_speaker_names(transcript: str, suggestions: list[SpeakerNameSuggestion
     for suggestion in suggestions:
         updated = updated.replace(f"**{suggestion.speaker}**", f"**{suggestion.name}**")
     return updated
+
+
+def speaker_labels(transcript: str) -> list[str]:
+    """Return the diarization labels in their first-appearance order."""
+    labels: list[str] = []
+    for label in _SPEAKER_LINE.findall(transcript):
+        speaker = label[0] if isinstance(label, tuple) else label
+        if speaker not in labels:
+            labels.append(speaker)
+    return labels
+
+
+def apply_speaker_name_map(transcript: str, names: dict[str, str]) -> str:
+    """Apply only explicitly entered names, never infer one from voice data."""
+    updated = transcript
+    for speaker, name in names.items():
+        cleaned = name.strip()
+        if cleaned:
+            updated = updated.replace(f"**{speaker}**", f"**{cleaned}**")
+    return updated
