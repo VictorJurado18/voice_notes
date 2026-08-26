@@ -33,6 +33,7 @@ Write-Host "Building standalone Voice Notes application..."
     --clean `
     --onedir `
     --windowed `
+    --manifest (Join-Path $ProjectRoot "installer\VoiceNotes.manifest") `
     --name "VoiceNotes" `
     --icon (Join-Path $ProjectRoot "assets\voice-notes.ico") `
     --paths (Join-Path $ProjectRoot "src") `

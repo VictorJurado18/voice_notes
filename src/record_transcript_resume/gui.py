@@ -7,6 +7,7 @@ import time
 import tkinter as tk
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -225,7 +226,7 @@ class RecorderApp(ctk.CTk):
         self._active_min_height = self._min_widget_height
         # Keep the primary workflow fully visible on a typical desktop while
         # preserving enough room for the taskbar on smaller displays.
-        self._main_widget_height = min(650, max(self._min_widget_height, self.winfo_screenheight() - 200))
+        self._main_widget_height = min(658, max(self._min_widget_height, self.winfo_screenheight() - 200))
         self._preferred_widget_width = 560
         self._user_resized_window = False
         self._widget_scale = 1.0
@@ -333,6 +334,10 @@ class RecorderApp(ctk.CTk):
         self._text_import_open = False
         self._editor_document_path: Path | None = None
         self._editor_is_transcript = False
+        self._editor_dirty = False
+        self._editor_highlight_after: str | None = None
+        self.editor_save_state = tk.StringVar(value="Salvo")
+        self.editor_save_state_label: ctk.CTkLabel | None = None
 
         self._eq_smooth: list[float] = [0.0] * 16
         self._eq_peaks: list[float] = [0.0] * 16
@@ -350,6 +355,9 @@ class RecorderApp(ctk.CTk):
         self._eq_timer()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.bind("<Map>", self._restore_borderless_after_minimize, add="+")
+        # A remap can discard the native clipping region on some Windows/DPI
+        # combinations, so restore it whenever the shell becomes visible.
+        self.bind("<Map>", lambda _event: self._schedule_widget_rounding(), add="+")
         self.bind("<Configure>", lambda _event: self._schedule_widget_rounding(), add="+")
         if enable_tray:
             self._tray_available = self._tray.start()
@@ -420,7 +428,7 @@ class RecorderApp(ctk.CTk):
             title_block, text="Gravador", font=("Segoe UI", 20, "bold"),
             text_color=_COLORS["text"], anchor="w",
         )
-        title.pack(anchor=tk.W, pady=(0, 1))
+        title.pack(anchor=tk.W, pady=(8, 6))
         self._header_title = title
         drag_hint = ctk.CTkLabel(title_block, text="", height=1, anchor="w")
         drag_hint.pack(anchor=tk.W)
@@ -430,24 +438,26 @@ class RecorderApp(ctk.CTk):
             drag_label, title, drag_hint,
         )
 
+        window_controls = ctk.CTkFrame(header, fg_color="transparent")
+        window_controls.pack(side=tk.RIGHT, anchor=tk.N)
         self.close_button = ctk.CTkButton(
-            header, text="Encerrar", command=self._on_close, width=64, height=32,
+            window_controls, text="Encerrar", command=self._on_close, width=64, height=32,
             corner_radius=10, fg_color="transparent", hover_color="#3A1D2A",
             text_color=_COLORS["muted"], font=("Segoe UI", 10, "bold"),
         )
-        self.close_button.pack(side=tk.RIGHT, padx=(6, 0), pady=(8, 0))
+        self.close_button.pack(side=tk.RIGHT, padx=(6, 0))
         self.hide_button = ctk.CTkButton(
-            header, text="Ocultar", command=self._hide_to_tray, width=64, height=32,
+            window_controls, text="Ocultar", command=self._hide_to_tray, width=64, height=32,
             corner_radius=10, fg_color="transparent", hover_color=_COLORS["surface_alt"],
             text_color=_COLORS["muted"], font=("Segoe UI", 10, "bold"),
         )
-        self.hide_button.pack(side=tk.RIGHT, padx=(4, 0), pady=(8, 0))
+        self.hide_button.pack(side=tk.RIGHT, padx=(4, 0))
         self.minimize_button = ctk.CTkButton(
-            header, text="Minimizar", command=self._minimize_widget, width=76, height=32,
+            window_controls, text="Minimizar", command=self._minimize_widget, width=76, height=32,
             corner_radius=10, fg_color="transparent", hover_color=_COLORS["surface_alt"],
             text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
         )
-        self.minimize_button.pack(side=tk.RIGHT, padx=(4, 0), pady=(8, 0))
+        self.minimize_button.pack(side=tk.RIGHT, padx=(4, 0))
         navigation = ctk.CTkFrame(container, fg_color="#0D1525", corner_radius=10)
         navigation.pack(fill=tk.X, padx=20, pady=(4, 8))
         self._page_buttons: dict[str, ctk.CTkButton] = {}
@@ -660,7 +670,6 @@ class RecorderApp(ctk.CTk):
         # controles de janela para que a navegação nunca "desapareça".
         self._settings_panel = ctk.CTkFrame(
             content, fg_color="#0C1423", corner_radius=16,
-            border_width=1, border_color="#253552",
         )
         ctk.CTkLabel(
             self._settings_panel, text="CONFIGURAÇÕES", font=("Segoe UI", 10, "bold"),
@@ -1600,10 +1609,12 @@ class RecorderApp(ctk.CTk):
         """Clip the actual Windows window, not an inner frame, to a capsule."""
         if sys.platform != "win32" or self._round_region_after is not None:
             return
-        # Page switches cause a short burst of pack/configure events.  Waiting
-        # one frame coalesces that burst and applies the region to the final
-        # geometry, rather than to an intermediate rectangular size.
+        # Page switches cause a burst of geometry work. Apply once on the next
+        # frame, then once more after CustomTkinter has updated its scrollable
+        # canvas. The second pass matters on high-DPI Windows installations,
+        # where the final native client size can arrive after the first event.
         self._round_region_after = self.after(16, self._apply_widget_rounding)
+        self.after(160, self._apply_widget_rounding)
 
     def _apply_widget_rounding(self) -> None:
         self._round_region_after = None
@@ -1611,13 +1622,36 @@ class RecorderApp(ctk.CTk):
             return
         try:
             import ctypes
+            from ctypes import wintypes
 
-            width, height = self.winfo_width(), self.winfo_height()
+            hwnd = self.winfo_id()
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+            user32.GetClientRect.argtypes = (ctypes.c_void_p, ctypes.POINTER(wintypes.RECT))
+            user32.GetClientRect.restype = wintypes.BOOL
+            user32.SetWindowRgn.argtypes = (ctypes.c_void_p, ctypes.c_void_p, wintypes.BOOL)
+            user32.SetWindowRgn.restype = ctypes.c_int
+            gdi32.CreateRoundRectRgn.argtypes = (ctypes.c_int,) * 6
+            gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
+            gdi32.DeleteObject.argtypes = (ctypes.c_void_p,)
+            gdi32.DeleteObject.restype = wintypes.BOOL
+
+            # GetClientRect is in the exact coordinate space SetWindowRgn
+            # expects. winfo_width() can be DPI-virtualized on another PC.
+            bounds = wintypes.RECT()
+            if not user32.GetClientRect(hwnd, ctypes.byref(bounds)):
+                return
+            width = bounds.right - bounds.left
+            height = bounds.bottom - bounds.top
+            if width <= 0 or height <= 0:
+                return
             diameter = 36 if self._compact_mode else 44
-            region = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter)
+            region = gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter)
             if region:
                 # Windows owns the region after a successful SetWindowRgn.
-                ctypes.windll.user32.SetWindowRgn(self.winfo_id(), region, True)
+                if not user32.SetWindowRgn(hwnd, region, True):
+                    # On failure Windows does not own the GDI region.
+                    gdi32.DeleteObject(region)
         except (AttributeError, OSError):
             # The regular rectangular window remains functional on non-Windows
             # or restricted desktop environments.
@@ -1866,6 +1900,7 @@ class RecorderApp(ctk.CTk):
         if self._restore_borderless_on_map and self.state() != "iconic":
             self.overrideredirect(True)
             self._restore_borderless_on_map = False
+            self._schedule_widget_rounding()
 
     def _choose_output_dir(self) -> None:
         selected = filedialog.askdirectory(initialdir=self.output_dir.get() or ".")
@@ -1984,8 +2019,13 @@ class RecorderApp(ctk.CTk):
         """Show one direct destination in the widget; pages never nest."""
         if page not in self._page_layouts:
             raise ValueError(f"Página desconhecida: {page}")
-        if self._library_open and page != "library":
-            self._close_transcript_editor()
+        if self._library_open and page != "library" and not self._close_transcript_editor():
+            return
+        # The recording page has its own fixed action bar, so it needs the
+        # extra vertical room. Other destinations use this lower inset to keep
+        # the scroll canvas clear of the native rounded window corners.
+        bottom_inset = 4 if page == "record" else 20
+        self._container._parent_frame.pack_configure(pady=(0, bottom_inset))
         for layouts in self._page_layouts.values():
             for widget, _options in layouts:
                 widget.pack_forget()
@@ -2262,10 +2302,13 @@ class RecorderApp(ctk.CTk):
         except OSError as exc:
             messagebox.showerror("Não foi possível abrir", str(exc))
             return
-        self._close_transcript_editor()
+        if not self._close_transcript_editor():
+            return
         self.library_editor_title.set(title)
         self._editor_document_path = path
         self._editor_is_transcript = is_transcript
+        self._editor_dirty = False
+        self.editor_save_state.set("Salvo")
         window = ctk.CTkToplevel(self)
         self._library_document_window = window
         window.title("Voice Notes · Documento")
@@ -2281,15 +2324,28 @@ class RecorderApp(ctk.CTk):
             shell, textvariable=self.library_editor_title, font=("Segoe UI", 11, "bold"),
             text_color=_COLORS["text"], anchor="w",
         ).pack(fill=tk.X, padx=16, pady=(14, 3))
+        editor_meta = ctk.CTkFrame(shell, fg_color="transparent")
+        editor_meta.pack(fill=tk.X, padx=16, pady=(0, 10))
         ctk.CTkLabel(
-            shell, text=path.name, font=("Segoe UI", 9), text_color=_COLORS["muted"], anchor="w",
-        ).pack(fill=tk.X, padx=16, pady=(0, 10))
+            editor_meta, text=path.name, font=("Segoe UI", 9), text_color=_COLORS["muted"], anchor="w",
+        ).pack(side=tk.LEFT)
+        self.editor_save_state_label = ctk.CTkLabel(
+            editor_meta, textvariable=self.editor_save_state, font=("Segoe UI", 9, "bold"),
+            text_color=_COLORS["muted"], anchor="e",
+        )
+        self.editor_save_state_label.pack(side=tk.RIGHT)
         self.transcript_editor = ctk.CTkTextbox(
             shell, corner_radius=10, fg_color="#080C16", border_width=1,
             border_color="#2A3A58", text_color=_COLORS["text"], font=("Consolas", 11), wrap="word",
         )
         self.transcript_editor.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 10))
+        self._library_editing = True
         self.transcript_editor.insert("1.0", content)
+        self._configure_markdown_tags()
+        self._apply_markdown_highlighting()
+        editor_text = self.transcript_editor._textbox
+        editor_text.edit_modified(False)
+        editor_text.bind("<<Modified>>", self._on_editor_text_modified, add="+")
         editor_actions = ctk.CTkFrame(shell, fg_color="transparent")
         editor_actions.pack(fill=tk.X, padx=16, pady=(0, 14))
         self.library_suggest_names_button = ctk.CTkButton(
@@ -2314,15 +2370,94 @@ class RecorderApp(ctk.CTk):
             height=34, corner_radius=9, fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"],
             text_color="#FFFFFF", font=("Segoe UI", 10, "bold"),
         )
-        self.library_regenerate_button.pack(side=tk.RIGHT, padx=(0, 7))
+        if is_transcript:
+            self.library_regenerate_button.pack(side=tk.RIGHT, padx=(0, 7))
         self.library_suggest_names_button.configure(state=tk.NORMAL if is_transcript else tk.DISABLED)
-        self.library_regenerate_button.configure(state=tk.NORMAL if is_transcript else tk.DISABLED)
-        self._library_editing = True
+        window.bind("<Control-s>", self._save_open_document_shortcut, add="+")
         window.after(50, window.focus_force)
 
-    def _close_transcript_editor(self) -> None:
+    def _configure_markdown_tags(self) -> None:
+        """Make Markdown structure scannable while retaining editable source."""
+        editor = self.transcript_editor._textbox
+        editor.tag_configure("markdown_h1", foreground="#C7BDFF", font=("Consolas", 14, "bold"), spacing1=12, spacing3=6)
+        editor.tag_configure("markdown_h2", foreground="#9FC7FF", font=("Consolas", 12, "bold"), spacing1=10, spacing3=4)
+        editor.tag_configure("markdown_h3", foreground="#B8C8E8", font=("Consolas", 11, "bold"), spacing1=8, spacing3=3)
+        editor.tag_configure("markdown_bold", foreground="#FFFFFF", font=("Consolas", 11, "bold"))
+        editor.tag_configure("markdown_bullet", foreground="#B8C8E8")
+
+    def _schedule_markdown_highlighting(self) -> None:
+        if self._editor_highlight_after is not None:
+            self.after_cancel(self._editor_highlight_after)
+        self._editor_highlight_after = self.after(140, self._apply_markdown_highlighting)
+
+    def _apply_markdown_highlighting(self) -> None:
+        self._editor_highlight_after = None
         if not getattr(self, "_library_editing", False):
             return
+        editor = self.transcript_editor._textbox
+        tags = ("markdown_h1", "markdown_h2", "markdown_h3", "markdown_bold", "markdown_bullet")
+        for tag in tags:
+            editor.tag_remove(tag, "1.0", tk.END)
+        line_count = int(editor.index("end-1c").split(".")[0])
+        for number in range(1, line_count + 1):
+            start = f"{number}.0"
+            end = f"{number}.end"
+            line = editor.get(start, end)
+            if line.startswith("# "):
+                editor.tag_add("markdown_h1", start, end)
+            elif line.startswith("## "):
+                editor.tag_add("markdown_h2", start, end)
+            elif line.startswith("### "):
+                editor.tag_add("markdown_h3", start, end)
+            elif re.match(r"^\s*(?:[-*+] |\d+\. )", line):
+                editor.tag_add("markdown_bullet", start, end)
+            for match in re.finditer(r"\*\*[^*]+\*\*", line):
+                editor.tag_add("markdown_bold", f"{number}.{match.start()}", f"{number}.{match.end()}")
+
+    def _set_editor_save_state(self, state: str) -> None:
+        states = {
+            "dirty": ("Alterações não salvas", _COLORS["warning"]),
+            "saving": ("Salvando…", "#9FC7FF"),
+            "saved_now": ("Salvo agora", _COLORS["success"]),
+            "saved": ("Salvo", _COLORS["muted"]),
+            "error": ("Não foi possível salvar", _COLORS["danger"]),
+        }
+        text, color = states[state]
+        self.editor_save_state.set(text)
+        if self.editor_save_state_label is not None:
+            self.editor_save_state_label.configure(text_color=color)
+        if hasattr(self, "library_save_button"):
+            self.library_save_button.configure(
+                text="Salvando…" if state == "saving" else "Salvar",
+                state=tk.DISABLED if state == "saving" else tk.NORMAL,
+            )
+
+    def _on_editor_text_modified(self, *_: object) -> None:
+        if not getattr(self, "_library_editing", False):
+            return
+        editor = self.transcript_editor._textbox
+        if not editor.edit_modified():
+            return
+        editor.edit_modified(False)
+        self._editor_dirty = True
+        self._set_editor_save_state("dirty")
+        self._schedule_markdown_highlighting()
+
+    def _save_open_document_shortcut(self, _event: tk.Event[tk.Misc] | None = None) -> str:
+        self._save_open_document()
+        return "break"
+
+    def _close_transcript_editor(self) -> bool:
+        if not getattr(self, "_library_editing", False):
+            return True
+        if self._editor_dirty and not messagebox.askyesno(
+            "Alterações não salvas",
+            "Este documento tem alterações não salvas. Fechar mesmo assim?",
+        ):
+            return False
+        if self._editor_highlight_after is not None:
+            self.after_cancel(self._editor_highlight_after)
+            self._editor_highlight_after = None
         window = self._library_document_window
         self._library_document_window = None
         if window is not None and window.winfo_exists():
@@ -2330,8 +2465,11 @@ class RecorderApp(ctk.CTk):
         self._library_editor.pack_forget()
         self._editor_document_path = None
         self._editor_is_transcript = False
+        self._editor_dirty = False
+        self.editor_save_state_label = None
         self._library_editing = False
         self.after_idle(self._apply_page_minimum)
+        return True
 
     def _save_open_document(self) -> bool:
         path = self._editor_document_path
@@ -2342,14 +2480,25 @@ class RecorderApp(ctk.CTk):
         if not content:
             messagebox.showerror("Documento vazio", "Escreva ou mantenha algum conteúdo antes de salvar.")
             return False
+        self._set_editor_save_state("saving")
+        self.update_idletasks()
         try:
             path.write_text(content + "\n", encoding="utf-8")
         except OSError as exc:
+            self._set_editor_save_state("error")
             messagebox.showerror("Não foi possível salvar", str(exc))
             return False
+        self._editor_dirty = False
+        self.transcript_editor._textbox.edit_modified(False)
+        self._set_editor_save_state("saved_now")
         self.status.set("Documento salvo")
         self._refresh_library()
+        self.after(3500, self._settle_editor_saved_state)
         return True
+
+    def _settle_editor_saved_state(self) -> None:
+        if getattr(self, "_library_editing", False) and not self._editor_dirty:
+            self._set_editor_save_state("saved")
 
     def _save_transcript_and_regenerate(self) -> None:
         transcript_path = self._editor_document_path
