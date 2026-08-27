@@ -184,7 +184,7 @@ def start_downloaded_update(update: ApplicationUpdate) -> ApplicationUpdate:
             [str(launcher), str(os.getpid()), str(installer), str(install_log), str(Path(sys.executable))]
         )
         subprocess.Popen(
-            ["cmd.exe", "/d", "/s", "/c", launcher_command],
+            f"cmd.exe /d /c {launcher_command}",
             cwd=str(updates_dir),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -72,11 +74,35 @@ def test_update_launcher_waits_for_the_app_to_exit_before_running_setup(tmp_path
 
     assert result.available is True
     command = start_process.call_args.args[0]
-    assert command[:4] == ["cmd.exe", "/d", "/s", "/c"]
-    assert command[4].startswith('call "')
+    assert command.startswith('cmd.exe /d /c call "')
     launcher = updates_dir / "start-update.cmd"
     assert launcher.is_file()
     launcher_contents = launcher.read_text(encoding="ascii")
     assert ":wait_for_voice_notes" in launcher_contents
     assert "tasklist /FI" in launcher_contents
     assert "/VERYSILENT" in launcher_contents
+
+
+def test_update_launcher_executes_from_a_path_with_spaces(tmp_path) -> None:
+    """Run the generated Windows command instead of only asserting its shape."""
+    updates_dir = tmp_path / "Voice Notes updates"
+    updates_dir.mkdir()
+    installer = updates_dir / "Fake Voice Notes Setup.cmd"
+    installer.write_text(
+        '@echo off\r\n> "%~dp0installer-ran.txt" echo installer-ran\r\nexit /b 0\r\n',
+        encoding="ascii",
+    )
+    app_executable = updates_dir / "Voice Notes App.exe"
+    app_executable.write_bytes(b"placeholder")
+    update = ApplicationUpdate(True, "Pronto", "0.10.19", installer_path=str(installer))
+
+    with patch("record_transcript_resume.updates.subprocess.Popen") as start_process, \
+         patch("record_transcript_resume.updates.sys.executable", str(app_executable)):
+        result = start_downloaded_update(update)
+
+    assert result.available is True
+    command = start_process.call_args.args[0].replace(str(os.getpid()), "2147483647", 1)
+    assert f'"{app_executable}"' in command
+    subprocess.run(command, cwd=str(updates_dir), check=True, timeout=10)
+
+    assert (updates_dir / "installer-ran.txt").read_text(encoding="ascii").strip() == "installer-ran"
