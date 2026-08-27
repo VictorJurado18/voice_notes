@@ -92,13 +92,17 @@ def test_update_launcher_executes_from_a_path_with_spaces(tmp_path) -> None:
         '@echo off\r\n> "%~dp0installer-ran.txt" echo installer-ran\r\nexit /b 0\r\n',
         encoding="ascii",
     )
+    app_executable = updates_dir / "Voice Notes App.exe"
+    app_executable.write_bytes(b"placeholder")
     update = ApplicationUpdate(True, "Pronto", "0.10.19", installer_path=str(installer))
 
-    with patch("record_transcript_resume.updates.subprocess.Popen") as start_process:
+    with patch("record_transcript_resume.updates.subprocess.Popen") as start_process, \
+         patch("record_transcript_resume.updates.sys.executable", str(app_executable)):
         result = start_downloaded_update(update)
 
     assert result.available is True
     command = start_process.call_args.args[0].replace(str(os.getpid()), "2147483647", 1)
+    assert f'"{app_executable}"' in command
     subprocess.run(command, cwd=str(updates_dir), check=True, timeout=10)
 
     assert (updates_dir / "installer-ran.txt").read_text(encoding="ascii").strip() == "installer-ran"
