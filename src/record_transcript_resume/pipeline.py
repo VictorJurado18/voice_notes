@@ -35,6 +35,7 @@ def run(
     huggingface_token: str = "",
     output_mode: str = "both",
     transcription_provider: str = "local",
+    additional_instructions: str = "",
 ) -> PipelineResult:
     def _notify(msg: str) -> None:
         if callable(on_status):
@@ -71,6 +72,7 @@ def run(
                 date_str,
                 provider=provider,
                 summary_template=summary_template,
+                additional_instructions=additional_instructions,
             )
         except SynthesisError as exc:
             synthesis = SynthesisResult(
@@ -110,6 +112,7 @@ def retry_summary(
     provider: SummaryProvider = DEFAULT_PROVIDER,
     summary_template: SummaryTemplate = DEFAULT_TEMPLATE,
     on_status: object = None,
+    additional_instructions: str = "",
 ) -> Path:
     """Regenerate only ``summary.md`` from an existing saved transcription.
 
@@ -134,6 +137,7 @@ def retry_summary(
         datetime.now().strftime("%Y-%m-%d"),
         provider=provider,
         summary_template=summary_template,
+        additional_instructions=additional_instructions,
     )
     if synthesis.summary_md.lstrip().startswith("# Summary unavailable"):
         raise SynthesisError("The provider did not return a valid summary. Try again after checking the login.")

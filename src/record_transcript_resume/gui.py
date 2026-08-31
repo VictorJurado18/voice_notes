@@ -21,7 +21,7 @@ from record_transcript_resume.transcription import available_models
 from record_transcript_resume.windows_audio_backend import WindowsAudioBackend, WindowsAudioBackendConfig
 from record_transcript_resume.jobs import JobStore, ProcessingJob
 from record_transcript_resume.library import LibraryItem, discover_recordings
-from record_transcript_resume.synthesis import SUMMARY_TEMPLATE_LABELS
+from record_transcript_resume.synthesis import SUMMARY_TEMPLATE_LABELS, prompt_preview
 from record_transcript_resume.windows_process import hidden_process_kwargs
 
 def _log_hint() -> str:
@@ -154,6 +154,15 @@ class _TrayController:
                     pystray.MenuItem("Mostrar widget", self._show, default=True),
                     pystray.MenuItem("Ocultar widget", self._hide),
                     pystray.Menu.SEPARATOR,
+                    pystray.MenuItem(
+                        "Iniciar reunião", self._start_meeting,
+                        enabled=lambda _item: self._app._tray_can_start_meeting(),
+                    ),
+                    pystray.MenuItem(
+                        "Parar gravação", self._stop_meeting,
+                        enabled=lambda _item: self._app._tray_can_stop_meeting(),
+                    ),
+                    pystray.Menu.SEPARATOR,
                     pystray.MenuItem("Encerrar", self._quit),
                 ),
             )
@@ -177,6 +186,12 @@ class _TrayController:
     def _hide(self, *_: object) -> None:
         self._app.after(0, self._app._hide_to_tray)
 
+    def _start_meeting(self, *_: object) -> None:
+        self._app.after(0, self._app._start_recording_from_tray)
+
+    def _stop_meeting(self, *_: object) -> None:
+        self._app.after(0, self._app._stop_recording_from_tray)
+
     def _quit(self, *_: object) -> None:
         self._app.after(0, self._app._on_close)
 
@@ -191,6 +206,15 @@ class _TrayController:
             # Windows can reject notification requests while Explorer is restarting.
             # The tray icon itself remains the reliable way to restore the widget.
             pass
+
+    def refresh(self) -> None:
+        """Refresh dynamic tray actions after recording state changes."""
+        icon = self._icon
+        if icon is not None:
+            try:
+                icon.update_menu()  # type: ignore[attr-defined]
+            except Exception:
+                pass
 
     def stop(self) -> None:
         icon = self._icon
@@ -270,7 +294,7 @@ class RecorderApp(ctk.CTk):
         self._compact_position: tuple[int, int] | None = None
         self._compact_drag_active = False
         self._compact_drag_moved = False
-        self._compact_width = 468
+        self._compact_width = 584
         self._compact_height = 64
         self._provider_setup_running = False
         self._provider_setup_attempted = False
@@ -650,6 +674,13 @@ class RecorderApp(ctk.CTk):
             dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
         )
         self.profile_selector.pack(fill=tk.X)
+        self.profile_prompt_button = ctk.CTkButton(
+            profile_field, text="Ver prompt", command=self._show_selected_profile_prompt,
+            height=25, corner_radius=7, fg_color="transparent", hover_color="#22324F",
+            border_width=1, border_color="#2A3A58", text_color=_COLORS["brand_muted"],
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.profile_prompt_button.pack(anchor=tk.W, pady=(5, 0))
         summary_format_field = ctk.CTkFrame(preferences_row, fg_color="transparent")
         summary_format_field.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 0))
         ctk.CTkLabel(
@@ -665,6 +696,24 @@ class RecorderApp(ctk.CTk):
             font=("Segoe UI", 10),
         )
         self.template_selector.pack(fill=tk.X)
+
+        meeting_instructions_field = ctk.CTkFrame(capture_card, fg_color="transparent")
+        meeting_instructions_field.pack(fill=tk.X, padx=14, pady=(0, 10))
+        ctk.CTkLabel(
+            meeting_instructions_field, text="INSTRUÇÕES DESTA REUNIÃO (OPCIONAL)",
+            font=("Segoe UI", 9, "bold"), text_color=_COLORS["muted"], anchor="w",
+        ).pack(fill=tk.X, pady=(0, 3))
+        self.meeting_instructions_editor = ctk.CTkTextbox(
+            meeting_instructions_field, height=58, corner_radius=9, fg_color="#0D1525",
+            border_width=1, border_color="#2A3A58", text_color=_COLORS["text"],
+            font=("Segoe UI", 10), wrap="word",
+        )
+        self.meeting_instructions_editor.pack(fill=tk.X)
+        ctk.CTkLabel(
+            meeting_instructions_field,
+            text="Ex.: priorize decisões, riscos e próximos passos. Será usada somente no próximo processamento.",
+            font=("Segoe UI", 9), text_color=_COLORS["brand_muted"], anchor="w",
+        ).pack(fill=tk.X, pady=(4, 0))
 
         # Botões principais: uma ação primária e uma ação de parada secundária.
         # Keep the recording controls outside the scrolling page area.  The
@@ -1339,7 +1388,20 @@ class RecorderApp(ctk.CTk):
             width=60, height=32, corner_radius=9, fg_color="#3C2A3B",
             hover_color="#55384E", text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
         )
-        self.compact_stop_button.pack(side=tk.LEFT)
+        self.compact_stop_button.pack(side=tk.LEFT, padx=(0, 6))
+        self.compact_open_button = ctk.CTkButton(
+            compact_main, text="Abrir", command=self._restore_full_widget,
+            width=52, height=32, corner_radius=9, fg_color="#263550",
+            hover_color="#34476B", text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
+        )
+        self.compact_open_button.pack(side=tk.LEFT, padx=(0, 6))
+        self.compact_hide_button = ctk.CTkButton(
+            compact_main, text="Ocultar", command=self._hide_to_tray,
+            width=58, height=32, corner_radius=9, fg_color="transparent",
+            hover_color="#22324F", border_width=1, border_color="#2A3A58",
+            text_color=_COLORS["brand_muted"], font=("Segoe UI", 9, "bold"),
+        )
+        self.compact_hide_button.pack(side=tk.LEFT)
         for widget in (self._compact_surface, compact_main, self._compact_indicator, compact_text, self._compact_status_label, self._compact_meter):
             widget.bind("<ButtonPress-1>", self._start_compact_drag, add="+")
             widget.bind("<B1-Motion>", self._drag_compact_widget, add="+")
@@ -1449,6 +1511,68 @@ class RecorderApp(ctk.CTk):
         if profile is not None:
             return f"custom:{getattr(profile, 'id')}"
         return _SUMMARY_TEMPLATE_CODES.get(self.summary_template.get(), "meeting")
+
+    def _show_selected_profile_prompt(self) -> None:
+        """Show the exact summary instruction without making it editable here."""
+        template_code = self._selected_summary_template_code()
+        try:
+            preview = prompt_preview(template_code)
+        except Exception as exc:
+            messagebox.showerror("Prompt indisponível", str(exc))
+            return
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Prompt do perfil")
+        dialog.geometry("660x560")
+        dialog.minsize(520, 420)
+        dialog.configure(fg_color=_COLORS["bg"])
+        dialog.transient(self)
+        dialog.grab_set()
+        title = self.processing_profile.get()
+        ctk.CTkLabel(
+            dialog, text=f"PROMPT DO PERFIL · {title}", font=("Segoe UI", 12, "bold"),
+            text_color=_COLORS["text"], anchor="w",
+        ).pack(fill=tk.X, padx=18, pady=(18, 3))
+        ctk.CTkLabel(
+            dialog,
+            text="Somente leitura. As instruções desta reunião são adicionadas a este prompt quando você iniciar o processamento.",
+            font=("Segoe UI", 10), text_color=_COLORS["muted"], anchor="w", wraplength=610,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, padx=18, pady=(0, 10))
+        editor = ctk.CTkTextbox(
+            dialog, corner_radius=10, fg_color="#0D1525", border_width=1,
+            border_color="#2A3A58", text_color=_COLORS["text"], font=("Cascadia Mono", 10),
+            wrap="word",
+        )
+        editor.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 12))
+        editor.insert("1.0", preview)
+        editor.configure(state=tk.DISABLED)
+        actions = ctk.CTkFrame(dialog, fg_color="transparent")
+        actions.pack(fill=tk.X, padx=18, pady=(0, 16))
+
+        def copy_prompt() -> None:
+            self.clipboard_clear()
+            self.clipboard_append(preview)
+            self.update()
+            self.status.set("Prompt copiado")
+
+        ctk.CTkButton(
+            actions, text="Fechar", command=dialog.destroy, width=82, height=32,
+            corner_radius=8, fg_color="#263550", hover_color="#34476B",
+            text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
+        ).pack(side=tk.RIGHT)
+        ctk.CTkButton(
+            actions, text="Copiar prompt", command=copy_prompt, width=110, height=32,
+            corner_radius=8, fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"],
+            text_color="#FFFFFF", font=("Segoe UI", 10, "bold"),
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+    def _meeting_instructions(self) -> str:
+        editor = getattr(self, "meeting_instructions_editor", None)
+        return editor.get("1.0", "end-1c").strip() if editor is not None else ""
+
+    def _clear_meeting_instructions(self) -> None:
+        self.meeting_instructions_editor.delete("1.0", tk.END)
 
     def _refresh_summary_profile_choices(self) -> None:
         from record_transcript_resume.summary_profiles import load_profiles
@@ -2234,6 +2358,7 @@ class RecorderApp(ctk.CTk):
 
     def _refresh_compact_controls(self) -> None:
         """Keep compact status and actions truthful without opening the widget."""
+        self._tray.refresh()
         if not self._compact_mode:
             return
         recording = self._service is not None and self._service.state == RecordingState.RECORDING
@@ -2295,6 +2420,7 @@ class RecorderApp(ctk.CTk):
         self.output_browse_button.configure(state=state)
         self.recording_limit_entry.configure(state=state)
         self.recording_limit_selector.configure(state="readonly" if state == tk.NORMAL else state)
+        self.meeting_instructions_editor.configure(state=state)
         if hasattr(self, "transcription_source_selector"):
             self.transcription_source_selector.configure(state="readonly" if state == tk.NORMAL else state)
 
@@ -3068,6 +3194,32 @@ class RecorderApp(ctk.CTk):
             return
         self._start_summary_retry(item.transcript_path)
 
+    def _tray_can_start_meeting(self) -> bool:
+        recording = self._service is not None and self._service.state == RecordingState.RECORDING
+        finalizing = self._stop_thread is not None and self._stop_thread.is_alive()
+        processing = self._pipeline_thread is not None and self._pipeline_thread.is_alive()
+        return not recording and not finalizing and not processing
+
+    def _tray_can_stop_meeting(self) -> bool:
+        return self._service is not None and self._service.state == RecordingState.RECORDING
+
+    def _start_recording_from_tray(self) -> None:
+        """Start safely from the notification area without forcing the window open."""
+        if not self._tray_can_start_meeting():
+            return
+        self._start_recording()
+        if self._tray_can_stop_meeting():
+            self._tray.notify("Voice Notes", "Gravação iniciada em segundo plano.")
+        self._refresh_compact_controls()
+
+    def _stop_recording_from_tray(self) -> None:
+        """Request a normal, non-destructive stop from the notification area."""
+        if not self._tray_can_stop_meeting():
+            return
+        self._stop_recording()
+        self._tray.notify("Voice Notes", "Finalizando gravação e salvando o áudio.")
+        self._refresh_compact_controls()
+
     def _start_recording(self) -> None:
         try:
             limit_seconds = self._recording_timer_seconds(
@@ -3201,7 +3353,11 @@ class RecorderApp(ctk.CTk):
             f"GUI: áudio preservado antes do pipeline | file={output_path.name} "
             f"mode={output_mode} lang={lang_code} model={model_size} provider={provider}"
         )
-        self._queue_pipeline(output_path, lang_code, model_size, provider, summary_template, output_mode=output_mode)
+        self._queue_pipeline(
+            output_path, lang_code, model_size, provider, summary_template,
+            output_mode=output_mode,
+            additional_instructions=RecorderApp._meeting_instructions(self),
+        )
 
     def _update_device_info(self) -> None:
         if self._service is None:
@@ -3236,12 +3392,17 @@ class RecorderApp(ctk.CTk):
         self.progressbar.start()
         self._pipeline_thread = threading.Thread(
             target=self._youtube_download_worker,
-            args=(url, self.youtube_mode.get(), self._selected_summary_template_code()),
+            args=(
+                url, self.youtube_mode.get(), self._selected_summary_template_code(),
+                RecorderApp._meeting_instructions(self),
+            ),
             daemon=True,
         )
         self._pipeline_thread.start()
 
-    def _youtube_download_worker(self, url: str, selected_mode: str, selected_template: str) -> None:
+    def _youtube_download_worker(
+        self, url: str, selected_mode: str, selected_template: str, additional_instructions: str,
+    ) -> None:
         from record_transcript_resume.log import log
         from record_transcript_resume.youtube import download_audio
 
@@ -3262,9 +3423,14 @@ class RecorderApp(ctk.CTk):
             log(f"GUI: download do YouTube falhou: {type(exc).__name__}: {exc}")
             self.after(0, self._on_youtube_download_error, str(exc))
             return
-        self.after(0, self._on_youtube_download_done, audio_path, output_mode, selected_template)
+        self.after(
+            0, self._on_youtube_download_done, audio_path, output_mode, selected_template,
+            additional_instructions,
+        )
 
-    def _on_youtube_download_done(self, audio_path: Path, output_mode: str, selected_template: str) -> None:
+    def _on_youtube_download_done(
+        self, audio_path: Path, output_mode: str, selected_template: str, additional_instructions: str,
+    ) -> None:
         self.youtube_hint.set("Áudio pronto. Iniciando processamento…")
         self._queue_pipeline(
             audio_path,
@@ -3274,6 +3440,7 @@ class RecorderApp(ctk.CTk):
             selected_template,
             output_mode=output_mode,
             output_dir=Path(self.output_dir.get()),
+            additional_instructions=additional_instructions,
         )
 
     def _on_youtube_download_error(self, message: str) -> None:
@@ -3303,7 +3470,12 @@ class RecorderApp(ctk.CTk):
         model_size = self.pipeline_model.get()
         provider = self._selected_summary_provider_code()
         summary_template = self._selected_summary_template_code()
-        self._queue_pipeline(mp3_path, lang_code, model_size, provider, summary_template)
+        additional_instructions = RecorderApp._meeting_instructions(self)
+        queue_args = (mp3_path, lang_code, model_size, provider, summary_template)
+        if additional_instructions:
+            self._queue_pipeline(*queue_args, additional_instructions=additional_instructions)
+        else:
+            self._queue_pipeline(*queue_args)
 
     def _toggle_text_import(self) -> None:
         if self._text_import_open:
@@ -3375,6 +3547,7 @@ class RecorderApp(ctk.CTk):
         summary_template: str,
         output_mode: str = "both",
         output_dir: Path | None = None,
+        additional_instructions: str = "",
     ) -> None:
         """Persist the job before doing any expensive work."""
         if not mp3_path.is_file():
@@ -3389,8 +3562,10 @@ class RecorderApp(ctk.CTk):
             return
         job = self._job_store.enqueue(
             mp3_path, output_dir or mp3_path.parent, language, model_size, provider, summary_template, output_mode,
-            transcription_provider,
+            transcription_provider, additional_instructions.strip(),
         )
+        if additional_instructions.strip():
+            self._clear_meeting_instructions()
         self._start_queued_job(job)
 
     def _start_queued_job(self, job: ProcessingJob) -> None:
@@ -3412,6 +3587,7 @@ class RecorderApp(ctk.CTk):
             summary_template=job.summary_template,
             output_mode=job.output_mode,
             transcription_provider=job.transcription_provider,
+            additional_instructions=job.additional_instructions,
             output_dir=Path(job.output_dir),
             job_id=job.id,
         )
@@ -3463,6 +3639,7 @@ class RecorderApp(ctk.CTk):
         """Regenerate a saved summary, preserving the audio and transcription."""
         provider = self._selected_summary_provider_code()
         summary_template = self._selected_summary_template_code()
+        additional_instructions = RecorderApp._meeting_instructions(self)
         self.start_button.configure(state=tk.DISABLED)
         self.process_button.configure(state=tk.DISABLED)
         self.retry_summary_button.configure(state=tk.DISABLED)
@@ -3476,12 +3653,16 @@ class RecorderApp(ctk.CTk):
         self.progressbar.start()
         self._pipeline_thread = threading.Thread(
             target=self._retry_summary_worker,
-            args=(transcript_path, provider, summary_template),
+            args=(transcript_path, provider, summary_template, additional_instructions),
             daemon=True,
         )
         self._pipeline_thread.start()
+        if additional_instructions:
+            self._clear_meeting_instructions()
 
-    def _retry_summary_worker(self, transcript_path: Path, provider: str, summary_template: str) -> None:
+    def _retry_summary_worker(
+        self, transcript_path: Path, provider: str, summary_template: str, additional_instructions: str,
+    ) -> None:
         from record_transcript_resume.log import log
         from record_transcript_resume.pipeline import retry_summary
 
@@ -3491,6 +3672,7 @@ class RecorderApp(ctk.CTk):
                 transcript_path,
                 provider=provider,  # type: ignore[arg-type]
                 summary_template=summary_template,  # type: ignore[arg-type]
+                additional_instructions=additional_instructions,
                 on_status=lambda message: self.after(0, self.status.set, message),
             )
         except Exception as exc:
@@ -3603,6 +3785,7 @@ class RecorderApp(ctk.CTk):
         summary_template: str = "meeting",
         output_mode: str = "both",
         transcription_provider: str = "local",
+        additional_instructions: str = "",
         output_dir: Path | None = None,
         job_id: str | None = None,
     ) -> None:
@@ -3625,7 +3808,7 @@ class RecorderApp(ctk.CTk):
 
             self._pipeline_thread = threading.Thread(
                 target=self._pipeline_worker,
-                args=(mp3_path, output_dir or mp3_path.parent, language or "pt", model_size, provider, summary_template, output_mode, transcription_provider, self.diarize_speakers.get(), self.huggingface_token.get(), job_id, on_status),
+                args=(mp3_path, output_dir or mp3_path.parent, language or "pt", model_size, provider, summary_template, output_mode, transcription_provider, additional_instructions, self.diarize_speakers.get(), self.huggingface_token.get(), job_id, on_status),
                 daemon=True,
             )
             self._pipeline_thread.start()
@@ -3659,6 +3842,7 @@ class RecorderApp(ctk.CTk):
         summary_template: str,
         output_mode: str,
         transcription_provider: str,
+        additional_instructions: str,
         diarize_speakers: bool,
         huggingface_token: str,
         job_id: str | None,
@@ -3684,7 +3868,11 @@ class RecorderApp(ctk.CTk):
             except Exception:
                 pass
             env["VOICE_NOTES_HF_TOKEN"] = huggingface_token.strip()
-        pipeline_args = [str(mp3_path), str(output_dir), language, model_size, provider, summary_template, "1" if diarize_speakers else "0", output_mode, transcription_provider]
+        pipeline_args = [
+            str(mp3_path), str(output_dir), language, model_size, provider, summary_template,
+            "1" if diarize_speakers else "0", output_mode, transcription_provider,
+            additional_instructions,
+        ]
         if getattr(sys, "frozen", False):
             # In the installed application, run the frozen executable again in
             # worker mode so native transcription crashes stay isolated.

@@ -105,6 +105,13 @@ class PipelineTests(unittest.TestCase):
 
         self.assertEqual(generate.call_args.kwargs["summary_template"], "class")
 
+    def test_run_passes_meeting_specific_instructions_to_summary(self) -> None:
+        with patch("record_transcript_resume.pipeline.transcribe", return_value=_fake_segments()), \
+             patch("record_transcript_resume.pipeline.generate", return_value=_fake_synthesis()) as generate:
+            run(self.mp3, Path(self.tmp), additional_instructions="Realce decisões e riscos.")
+
+        self.assertEqual(generate.call_args.kwargs["additional_instructions"], "Realce decisões e riscos.")
+
     def test_transcription_only_skips_provider_and_does_not_save_summary(self) -> None:
         with patch("record_transcript_resume.pipeline.transcribe", return_value=_fake_segments()), \
              patch("record_transcript_resume.pipeline.generate") as generate:
