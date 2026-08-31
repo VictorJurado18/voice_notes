@@ -31,3 +31,18 @@ def test_job_store_does_not_restart_audio_already_moved(tmp_path: Path) -> None:
     saved = store.list()[0]
     assert saved.id == job.id
     assert saved.status == "needs_attention"
+
+
+def test_job_store_preserves_meeting_specific_instructions(tmp_path: Path) -> None:
+    mp3 = tmp_path / "recording.mp3"
+    mp3.write_bytes(b"audio")
+    store = JobStore(tmp_path / "jobs.json")
+
+    job = store.enqueue(
+        mp3, tmp_path, "pt", "small", "codex", "meeting",
+        additional_instructions="Liste riscos e responsáveis.",
+    )
+
+    persisted = store.list()[0]
+    assert persisted.id == job.id
+    assert persisted.additional_instructions == "Liste riscos e responsáveis."

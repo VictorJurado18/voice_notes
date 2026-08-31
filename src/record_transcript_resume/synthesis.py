@@ -95,11 +95,19 @@ def generate(
     date_str: str,
     provider: SummaryProvider = DEFAULT_PROVIDER,
     summary_template: SummaryTemplate = DEFAULT_TEMPLATE,
+    additional_instructions: str = "",
 ) -> SynthesisResult:
     is_api_provider = provider == "api" or provider.startswith("api:")
     if provider not in SUPPORTED_PROVIDERS and not is_api_provider:
         raise SynthesisError(f"Unsupported summary provider: {provider}")
     template_label, sections, profile_instructions = _summary_structure(summary_template)
+    additional = additional_instructions.strip()
+    if additional:
+        profile_instructions += (
+            "\nInstruções específicas desta gravação:\n"
+            f"{additional}\n"
+            "Priorize essas instruções sem inventar informações ausentes na transcrição.\n"
+        )
     prompt = _PROMPT_TEMPLATE.format(
         date=date_str,
         template_label=template_label,
@@ -141,6 +149,18 @@ def generate(
         )
 
     return _result_from_stdout(result.stdout.strip())
+
+
+def prompt_preview(summary_template: SummaryTemplate) -> str:
+    """Return the read-only instruction used by a native or saved profile."""
+    template_label, sections, profile_instructions = _summary_structure(summary_template)
+    return _PROMPT_TEMPLATE.format(
+        date="<data da gravação>",
+        template_label=template_label,
+        transcription="<transcrição da reunião>",
+        profile_instructions=profile_instructions,
+        sections=sections,
+    )
 
 
 def _summary_structure(summary_template: SummaryTemplate) -> tuple[str, str, str]:

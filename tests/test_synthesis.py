@@ -13,6 +13,7 @@ from record_transcript_resume.synthesis import (
     SynthesisResult,
     _cli_executable,
     generate,
+    prompt_preview,
     provider_login_status,
     start_provider_login,
 )
@@ -106,6 +107,25 @@ class SynthesisTests(unittest.TestCase):
         prompt = run.call_args.kwargs["input"]
         self.assertIn("Formato do resumo: Assessment", prompt)
         self.assertIn("Agrupe por competência", prompt)
+
+    def test_generate_adds_instructions_for_only_the_current_meeting(self) -> None:
+        proc = _make_completed_process(json.dumps({"folder_name": "meeting", "summary_md": "# Resumo"}))
+        with patch("record_transcript_resume.synthesis.subprocess.run", return_value=proc) as run:
+            generate(
+                "Transcription.", "2026-05-21", summary_template="meeting",
+                additional_instructions="Destaque riscos e prazos confirmados.",
+            )
+
+        prompt = run.call_args.kwargs["input"]
+        self.assertIn("Instruções específicas desta gravação", prompt)
+        self.assertIn("Destaque riscos e prazos confirmados.", prompt)
+
+    def test_prompt_preview_exposes_native_profile_instruction_read_only(self) -> None:
+        preview = prompt_preview("sales")
+
+        self.assertIn("Formato do resumo: Call comercial", preview)
+        self.assertIn("## Próximo contato", preview)
+        self.assertIn("<transcrição da reunião>", preview)
 
     def test_generate_raises_when_provider_cli_fails(self) -> None:
         proc = _make_completed_process("authentication failed", returncode=1)
