@@ -21,7 +21,7 @@ from record_transcript_resume.transcription import available_models
 from record_transcript_resume.windows_audio_backend import WindowsAudioBackend, WindowsAudioBackendConfig
 from record_transcript_resume.jobs import JobStore, ProcessingJob
 from record_transcript_resume.library import LibraryItem, discover_recordings
-from record_transcript_resume.synthesis import SUMMARY_TEMPLATE_LABELS, prompt_preview
+from record_transcript_resume.synthesis import SUMMARY_TEMPLATE_LABELS, profile_prompt_seed, prompt_preview
 from record_transcript_resume.windows_process import hidden_process_kwargs
 
 def _log_hint() -> str:
@@ -52,11 +52,13 @@ _WHISPER_MODEL_DESCRIPTIONS = {
     "large-v3": "Máxima precisão · mais pesado",
 }
 _PROCESSING_PROFILES = {
-    "Personalizado": (None, None, None),
+    "Resumo padrão": ("Reunião", "small", False),
     "Reunião de trabalho": ("Reunião", "small", True),
     "Aula": ("Aula", "medium", False),
     "Entrevista": ("Entrevista", "medium", True),
     "Call comercial": ("Call comercial", "small", True),
+    "Brainstorm": ("Brainstorm", "small", True),
+    "Resumo executivo": ("Resumo executivo", "small", True),
     "Estudo": ("Estudo", "medium", False),
     "Plano de ação": ("Plano de ação", "small", True),
 }
@@ -352,16 +354,9 @@ class RecorderApp(ctk.CTk):
         self._api_provider_open = False
         self._api_advanced_open = False
         self.summary_template = tk.StringVar(value="Reunião")
-        self.processing_profile = tk.StringVar(value="Personalizado")
-        from record_transcript_resume.summary_profiles import SummaryProfile, load_profiles
+        self.processing_profile = tk.StringVar(value="Resumo padrão")
+        from record_transcript_resume.summary_profiles import load_profiles
         self._summary_profiles = load_profiles()
-        self._editing_summary_profile_id: str | None = None
-        self._summary_profile_form_open = False
-        profile_defaults = SummaryProfile()
-        self.summary_profile_name = tk.StringVar(value=profile_defaults.name)
-        self.summary_profile_template = tk.StringVar(value="Reunião")
-        self.summary_profile_model = tk.StringVar(value=profile_defaults.model_size)
-        self.summary_profile_speakers = tk.BooleanVar(value=profile_defaults.separate_speakers)
         saved_huggingface_token = _saved_huggingface_token()
         self.huggingface_token = tk.StringVar(value=saved_huggingface_token)
         # Once configured, speaker separation should be the normal behavior.
@@ -664,9 +659,9 @@ class RecorderApp(ctk.CTk):
         preferences_row = ctk.CTkFrame(capture_card, fg_color="transparent")
         preferences_row.pack(fill=tk.X, padx=14, pady=(8, 10))
         profile_field = ctk.CTkFrame(preferences_row, fg_color="transparent")
-        profile_field.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        profile_field.pack(fill=tk.X)
         ctk.CTkLabel(
-            profile_field, text="PERFIL", font=("Segoe UI", 9, "bold"),
+            profile_field, text="FORMATO DO RESUMO", font=("Segoe UI", 9, "bold"),
             text_color=_COLORS["muted"], anchor="w",
         ).pack(fill=tk.X, pady=(0, 3))
         self.profile_selector = ctk.CTkComboBox(
@@ -677,33 +672,11 @@ class RecorderApp(ctk.CTk):
             dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
         )
         self.profile_selector.pack(fill=tk.X)
-        self.profile_prompt_button = ctk.CTkButton(
-            profile_field, text="Ver prompt", command=self._show_selected_profile_prompt,
-            height=25, corner_radius=7, fg_color="transparent", hover_color="#22324F",
-            border_width=1, border_color="#2A3A58", text_color=_COLORS["brand_muted"],
-            font=("Segoe UI", 9, "bold"),
-        )
-        self.profile_prompt_button.pack(anchor=tk.W, pady=(5, 0))
-        summary_format_field = ctk.CTkFrame(preferences_row, fg_color="transparent")
-        summary_format_field.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 0))
-        ctk.CTkLabel(
-            summary_format_field, text="FORMATO DO RESUMO", font=("Segoe UI", 9, "bold"),
-            text_color=_COLORS["muted"], anchor="w",
-        ).pack(fill=tk.X, pady=(0, 3))
-        self.template_selector = ctk.CTkComboBox(
-            summary_format_field, variable=self.summary_template, values=_SUMMARY_TEMPLATE_LABELS,
-            state="readonly", height=34, corner_radius=9,
-            fg_color="#0D1525", border_color="#2A3A58", button_color="#263550",
-            button_hover_color="#34476B", text_color=_COLORS["text"],
-            dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"],
-            font=("Segoe UI", 10),
-        )
-        self.template_selector.pack(fill=tk.X)
 
         meeting_instructions_field = ctk.CTkFrame(capture_card, fg_color="transparent")
         meeting_instructions_field.pack(fill=tk.X, padx=14, pady=(0, 10))
         ctk.CTkLabel(
-            meeting_instructions_field, text="INSTRUÇÕES DESTA REUNIÃO (OPCIONAL)",
+            meeting_instructions_field, text="AJUSTE DESTA GRAVAÇÃO (OPCIONAL)",
             font=("Segoe UI", 9, "bold"), text_color=_COLORS["muted"], anchor="w",
         ).pack(fill=tk.X, pady=(0, 3))
         self.meeting_instructions_editor = ctk.CTkTextbox(
@@ -756,7 +729,7 @@ class RecorderApp(ctk.CTk):
         settings_nav = ctk.CTkFrame(self._settings_panel, fg_color="#111A2C", corner_radius=9)
         settings_nav.pack(fill=tk.X, padx=14, pady=(0, 10))
         self._settings_section_buttons: dict[str, ctk.CTkButton] = {}
-        for section, label in [("provider", "Provider e API"), ("profiles", "Perfis"), ("transcription", "Transcrição"), ("speakers", "Falantes")]:
+        for section, label in [("provider", "Provider e API"), ("profiles", "Resumos"), ("transcription", "Transcrição"), ("speakers", "Falantes")]:
             button = ctk.CTkButton(
                 settings_nav, text=label, command=lambda key=section: self._show_settings_section(key),
                 width=110, height=32, corner_radius=7, fg_color="transparent", hover_color="#22324F",
@@ -915,67 +888,17 @@ class RecorderApp(ctk.CTk):
         ).pack(fill=tk.X, padx=14, pady=(0, 12))
 
         profiles_card = settings_card(
-            self._settings_sections["profiles"], "Perfis de resumo",
-            "Crie um formato reutilizável para assessments, entrevistas, aulas ou qualquer outro contexto.",
+            self._settings_sections["profiles"], "Formatos e perfis de resumo",
+            "Consulte os prompts dos formatos nativos ou crie um perfil salvo com suas próprias instruções.",
         )
         self.summary_profile_list = ctk.CTkFrame(profiles_card, fg_color="#0D1525", corner_radius=10)
         self.summary_profile_list.pack(fill=tk.X, padx=14, pady=(0, 10))
         self.new_summary_profile_button = ctk.CTkButton(
-            profiles_card, text="+ Novo perfil", command=self._toggle_summary_profile_form,
+            profiles_card, text="+ Novo perfil", command=self._open_new_summary_profile_dialog,
             height=34, corner_radius=9, fg_color="#263550", hover_color="#34476B",
             text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
         )
         self.new_summary_profile_button.pack(fill=tk.X, padx=14, pady=(0, 10))
-        self.summary_profile_card = ctk.CTkFrame(profiles_card, fg_color="#0D1525", corner_radius=10)
-        self.summary_profile_form_title = ctk.CTkLabel(
-            self.summary_profile_card, text="NOVO PERFIL", font=("Segoe UI", 9, "bold"),
-            text_color=_COLORS["muted"], anchor="w",
-        )
-        self.summary_profile_form_title.pack(fill=tk.X, padx=10, pady=(10, 2))
-        ctk.CTkLabel(
-            self.summary_profile_card,
-            text="O formato-base dá um ponto de partida. As instruções definem o resultado de verdade.",
-            font=("Segoe UI", 9), text_color=_COLORS["muted"], anchor="w", justify=tk.LEFT, wraplength=450,
-        ).pack(fill=tk.X, padx=10, pady=(0, 6))
-        ctk.CTkLabel(self.summary_profile_card, text="Nome do perfil", font=("Segoe UI", 9, "bold"), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, padx=10, pady=(4, 1))
-        ctk.CTkEntry(self.summary_profile_card, textvariable=self.summary_profile_name, height=30, corner_radius=7, fg_color="#080C16", border_color="#2A3A58", text_color=_COLORS["text"]).pack(fill=tk.X, padx=10)
-        ctk.CTkLabel(self.summary_profile_card, text="Formato-base", font=("Segoe UI", 9, "bold"), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, padx=10, pady=(7, 1))
-        ctk.CTkComboBox(
-            self.summary_profile_card, variable=self.summary_profile_template, values=_SUMMARY_TEMPLATE_LABELS,
-            state="readonly", height=30, corner_radius=7, fg_color="#080C16", border_color="#2A3A58",
-            button_color="#263550", button_hover_color="#34476B", text_color=_COLORS["text"],
-            dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
-        ).pack(fill=tk.X, padx=10)
-        ctk.CTkLabel(self.summary_profile_card, text="Estrutura ou instruções desejadas", font=("Segoe UI", 9, "bold"), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, padx=10, pady=(7, 1))
-        self.summary_profile_instructions = ctk.CTkTextbox(
-            self.summary_profile_card, height=78, corner_radius=7, fg_color="#080C16", border_color="#2A3A58",
-            border_width=1, text_color=_COLORS["text"], font=("Segoe UI", 10), wrap="word",
-        )
-        self.summary_profile_instructions.pack(fill=tk.X, padx=10)
-        ctk.CTkLabel(
-            self.summary_profile_card,
-            text="Ex.: Organize por competência, cite evidências e encerre com riscos e recomendações.",
-            font=("Segoe UI", 9), text_color=_COLORS["muted"], anchor="w", justify=tk.LEFT, wraplength=450,
-        ).pack(fill=tk.X, padx=10, pady=(3, 3))
-        profile_preferences = ctk.CTkFrame(self.summary_profile_card, fg_color="transparent")
-        profile_preferences.pack(fill=tk.X, padx=10, pady=(3, 5))
-        ctk.CTkLabel(profile_preferences, text="Modelo Whisper", font=("Segoe UI", 9, "bold"), text_color=_COLORS["muted"], anchor="w").pack(side=tk.LEFT)
-        ctk.CTkComboBox(
-            profile_preferences, variable=self.summary_profile_model, values=self._available_models,
-            state="readonly", width=122, height=30, corner_radius=7, fg_color="#080C16", border_color="#2A3A58",
-            button_color="#263550", button_hover_color="#34476B", text_color=_COLORS["text"],
-            dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
-        ).pack(side=tk.RIGHT)
-        ctk.CTkCheckBox(
-            self.summary_profile_card, text="Separar falantes quando houver token configurado", variable=self.summary_profile_speakers,
-            fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"], text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
-        ).pack(anchor=tk.W, padx=10, pady=(2, 7))
-        self.summary_profile_save_button = ctk.CTkButton(
-            self.summary_profile_card, text="Salvar perfil", command=self._save_summary_profile,
-            height=32, corner_radius=8, fg_color="#244462", hover_color="#315A80",
-            text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
-        )
-        self.summary_profile_save_button.pack(fill=tk.X, padx=10, pady=(0, 10))
         self._render_summary_profile_list()
 
         transcription_card = settings_card(self._settings_sections["transcription"], "Transcrição", "Idioma e qualidade do texto transcrito.")
@@ -1166,7 +1089,7 @@ class RecorderApp(ctk.CTk):
             dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
         )
         self.youtube_mode_selector.pack(fill=tk.X, padx=16)
-        ctk.CTkLabel(self._youtube_panel, text="PERFIL", font=("Segoe UI", 9, "bold"), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, padx=16, pady=(10, 3))
+        ctk.CTkLabel(self._youtube_panel, text="FORMATO DO RESUMO", font=("Segoe UI", 9, "bold"), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, padx=16, pady=(10, 3))
         self.youtube_profile_selector = ctk.CTkComboBox(
             self._youtube_panel, variable=self.processing_profile, values=self._summary_profile_options(), state="readonly",
             height=32, corner_radius=8, fg_color="#080C16", border_color="#2A3A58",
@@ -1174,14 +1097,6 @@ class RecorderApp(ctk.CTk):
             dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
         )
         self.youtube_profile_selector.pack(fill=tk.X, padx=16)
-        ctk.CTkLabel(self._youtube_panel, text="FORMATO DO RESUMO", font=("Segoe UI", 9, "bold"), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, padx=16, pady=(10, 3))
-        self.youtube_template_selector = ctk.CTkComboBox(
-            self._youtube_panel, variable=self.summary_template, values=_SUMMARY_TEMPLATE_LABELS,
-            state="readonly", height=32, corner_radius=8, fg_color="#080C16", border_color="#2A3A58",
-            button_color="#263550", button_hover_color="#34476B", text_color=_COLORS["text"],
-            dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
-        )
-        self.youtube_template_selector.pack(fill=tk.X, padx=16)
         self.youtube_process_button = ctk.CTkButton(
             self._youtube_panel, text="Baixar áudio e processar", command=self._process_youtube,
             height=42, corner_radius=10, fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"],
@@ -1516,10 +1431,10 @@ class RecorderApp(ctk.CTk):
             self._render_api_provider_list()
 
     def _summary_profile_options(self) -> list[str]:
-        return [*list(_PROCESSING_PROFILES), *[f"Personalizado · {profile.name}" for profile in self._summary_profiles]]
+        return [*list(_PROCESSING_PROFILES), *[f"Perfil salvo · {profile.name}" for profile in self._summary_profiles]]
 
     def _custom_summary_profile_for_label(self, label: str) -> object | None:
-        prefix = "Personalizado · "
+        prefix = "Perfil salvo · "
         if not label.startswith(prefix):
             return None
         name = label.removeprefix(prefix)
@@ -1612,7 +1527,7 @@ class RecorderApp(ctk.CTk):
             if selector is not None:
                 selector.configure(values=values)
         if self.processing_profile.get() not in values:
-            self.processing_profile.set("Personalizado")
+            self.processing_profile.set("Resumo padrão")
         if hasattr(self, "summary_profile_list"):
             self._render_summary_profile_list()
 
@@ -1620,12 +1535,33 @@ class RecorderApp(ctk.CTk):
         for child in self.summary_profile_list.winfo_children():
             child.destroy()
         ctk.CTkLabel(
-            self.summary_profile_list, text="PERFIS SALVOS", font=("Segoe UI", 9, "bold"),
+            self.summary_profile_list, text="FORMATOS NATIVOS", font=("Segoe UI", 9, "bold"),
             text_color=_COLORS["muted"], anchor="w",
         ).pack(fill=tk.X, padx=10, pady=(9, 3))
+        for label, (template, _model, _speakers) in _PROCESSING_PROFILES.items():
+            row = ctk.CTkFrame(self.summary_profile_list, fg_color="transparent")
+            row.pack(fill=tk.X, padx=10, pady=(0, 6))
+            details = ctk.CTkFrame(row, fg_color="transparent")
+            details.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            ctk.CTkLabel(details, text=label, font=("Segoe UI", 10, "bold"), text_color=_COLORS["text"], anchor="w").pack(fill=tk.X)
+            ctk.CTkLabel(
+                details, text=f"{template} · prompt padrão", font=("Segoe UI", 9),
+                text_color=_COLORS["muted"], anchor="w",
+            ).pack(fill=tk.X)
+            ctk.CTkButton(
+                row, text="Ver prompt", command=lambda current_label=label, current_template=template: self._show_profile_prompt(
+                    _SUMMARY_TEMPLATE_CODES.get(current_template, "meeting"), current_label,
+                ), width=76, height=28, corner_radius=7, fg_color="#263550", hover_color="#34476B",
+                text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
+            ).pack(side=tk.RIGHT)
+
+        ctk.CTkLabel(
+            self.summary_profile_list, text="PERFIS SALVOS", font=("Segoe UI", 9, "bold"),
+            text_color=_COLORS["muted"], anchor="w",
+        ).pack(fill=tk.X, padx=10, pady=(8, 3))
         if not self._summary_profiles:
             ctk.CTkLabel(
-                self.summary_profile_list, text="Os perfis padrão continuam disponíveis no seletor. Crie um para reutilizar seu próprio formato.",
+                self.summary_profile_list, text="Crie um perfil salvo quando quiser reutilizar instruções próprias sobre um formato nativo.",
                 font=("Segoe UI", 9), text_color=_COLORS["muted"], anchor="w", justify=tk.LEFT, wraplength=445,
             ).pack(fill=tk.X, padx=10, pady=(0, 9))
             return
@@ -1635,7 +1571,7 @@ class RecorderApp(ctk.CTk):
             details = ctk.CTkFrame(row, fg_color="transparent")
             details.pack(side=tk.LEFT, fill=tk.X, expand=True)
             ctk.CTkLabel(details, text=profile.name, font=("Segoe UI", 10, "bold"), text_color=_COLORS["text"], anchor="w").pack(fill=tk.X)
-            template_label = _SUMMARY_TEMPLATE_NAMES_BY_CODE.get(profile.base_template, "Reunião")
+            template_label = _SUMMARY_TEMPLATE_NAMES_BY_CODE.get(profile.base_template, "Prompt próprio")
             speaker_status = "falantes" if profile.separate_speakers else "sem falantes"
             ctk.CTkLabel(details, text=f"{template_label} · {profile.model_size} · {speaker_status}", font=("Segoe UI", 9), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X)
             ctk.CTkButton(
@@ -1643,69 +1579,257 @@ class RecorderApp(ctk.CTk):
                 width=64, height=28, corner_radius=7, fg_color="#263550", hover_color="#34476B",
                 text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
             ).pack(side=tk.RIGHT)
+            ctk.CTkButton(
+                row, text="Ver prompt", command=lambda profile_id=profile.id, profile_name=profile.name: self._show_profile_prompt(
+                    f"custom:{profile_id}", f"Perfil salvo · {profile_name}",
+                ), width=76, height=28, corner_radius=7, fg_color="#263550", hover_color="#34476B",
+                text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
+            ).pack(side=tk.RIGHT, padx=(0, 6))
 
-    def _toggle_summary_profile_form(self) -> None:
-        if self._summary_profile_form_open:
-            self._hide_summary_profile_form()
-            return
+    def _open_new_summary_profile_dialog(self) -> None:
         from record_transcript_resume.summary_profiles import SummaryProfile
 
-        self._editing_summary_profile_id = None
-        self._fill_summary_profile_form(SummaryProfile())
-        self.summary_profile_form_title.configure(text="NOVO PERFIL")
-        self.summary_profile_save_button.configure(text="Salvar perfil")
-        self._show_summary_profile_form()
-
-    def _show_summary_profile_form(self) -> None:
-        if not self._summary_profile_form_open:
-            self.summary_profile_card.pack(fill=tk.X, padx=14, pady=(0, 10))
-            self._summary_profile_form_open = True
-        self.new_summary_profile_button.configure(text="− Ocultar novo perfil")
-        self.after_idle(self._apply_page_minimum)
-
-    def _hide_summary_profile_form(self) -> None:
-        self.summary_profile_card.pack_forget()
-        self._summary_profile_form_open = False
-        self.new_summary_profile_button.configure(text="+ Novo perfil")
-        self.after_idle(self._apply_page_minimum)
-
-    def _fill_summary_profile_form(self, profile: object) -> None:
-        self.summary_profile_name.set(str(getattr(profile, "name", "Meu perfil")))
-        self.summary_profile_template.set(_SUMMARY_TEMPLATE_NAMES_BY_CODE.get(str(getattr(profile, "base_template", "meeting")), "Reunião"))
-        self.summary_profile_model.set(str(getattr(profile, "model_size", "small")))
-        self.summary_profile_speakers.set(bool(getattr(profile, "separate_speakers", False)))
-        self.summary_profile_instructions.delete("1.0", tk.END)
-        self.summary_profile_instructions.insert("1.0", str(getattr(profile, "instructions", "")))
+        self._open_summary_profile_dialog(SummaryProfile())
 
     def _edit_summary_profile(self, profile_id: str) -> None:
         profile = next((item for item in self._summary_profiles if item.id == profile_id), None)
         if profile is None:
             messagebox.showerror("Perfil indisponível", "Esse perfil não foi encontrado. Atualize a lista e tente novamente.")
             return
-        self._editing_summary_profile_id = profile_id
-        self._fill_summary_profile_form(profile)
-        self.summary_profile_form_title.configure(text=f"EDITAR PERFIL · {profile.name}")
-        self.summary_profile_save_button.configure(text="Salvar alterações")
-        self._show_summary_profile_form()
+        self._open_summary_profile_dialog(profile)
 
-    def _save_summary_profile(self) -> None:
+    def _open_summary_profile_dialog(self, profile: object) -> None:
+        """Create or edit a saved profile without expanding the settings page."""
+        profile_id = str(getattr(profile, "id", ""))
+        profile_name = str(getattr(profile, "name", "Meu perfil"))
+        stored_base_template = str(getattr(profile, "base_template", ""))
+        base_template = _SUMMARY_TEMPLATE_NAMES_BY_CODE.get(stored_base_template, "Reunião")
+        prompt_mode = str(getattr(profile, "prompt_mode", "append"))
+        use_base_initially = bool(stored_base_template)
+        start_mode_value = tk.StringVar(value="Usar prompt-base" if use_base_initially else "Começar em branco")
+        name_value = tk.StringVar(value=profile_name)
+        template_value = tk.StringVar(value=base_template)
+        model_value = tk.StringVar(value=str(getattr(profile, "model_size", "small")))
+        speakers_value = tk.BooleanVar(value=bool(getattr(profile, "separate_speakers", False)))
+        initial_instructions = str(getattr(profile, "instructions", ""))
+        if use_base_initially and (not profile_id or prompt_mode != "custom"):
+            initial_instructions = profile_prompt_seed(stored_base_template or "meeting", initial_instructions)
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Editar perfil de resumo" if profile_id else "Novo perfil de resumo")
+        dialog.geometry("680x760")
+        dialog.minsize(570, 590)
+        dialog.configure(fg_color=_COLORS["bg"])
+        dialog.transient(self)
+        dialog.grab_set()
+
+        shell = ctk.CTkFrame(dialog, fg_color=_COLORS["surface"], corner_radius=16)
+        shell.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        ctk.CTkLabel(
+            shell, text="Editar perfil de resumo" if profile_id else "Criar perfil de resumo",
+            font=("Segoe UI", 15, "bold"), text_color=_COLORS["text"], anchor="w",
+        ).pack(fill=tk.X, padx=18, pady=(18, 2))
+        ctk.CTkLabel(
+            shell,
+            text=(
+                "Escolha começar vazio ou carregar um prompt-base nativo para editar. "
+                "O que você salvar aqui será o prompt deste perfil."
+            ),
+            font=("Segoe UI", 10), text_color=_COLORS["muted"], anchor="w", justify=tk.LEFT,
+            wraplength=620,
+        ).pack(fill=tk.X, padx=18, pady=(0, 14))
+
+        def field_label(text: str) -> None:
+            ctk.CTkLabel(
+                shell, text=text, font=("Segoe UI", 9, "bold"),
+                text_color=_COLORS["muted"], anchor="w",
+            ).pack(fill=tk.X, padx=18, pady=(0, 3))
+
+        field_label("NOME DO PERFIL")
+        name_entry = ctk.CTkEntry(
+            shell, textvariable=name_value, height=34, corner_radius=9, fg_color="#0D1525",
+            border_color="#2A3A58", text_color=_COLORS["text"], font=("Segoe UI", 10),
+        )
+        name_entry.pack(fill=tk.X, padx=18, pady=(0, 12))
+
+        field_label("COMO DESEJA COMEÇAR?")
+        start_mode_selector = ctk.CTkSegmentedButton(
+            shell, variable=start_mode_value, values=["Usar prompt-base", "Começar em branco"],
+            height=34, corner_radius=8, fg_color="#0D1525", selected_color="#315A80",
+            selected_hover_color="#3A6A94", unselected_color="#1A2942", unselected_hover_color="#263A5B",
+            text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
+        )
+        start_mode_selector.pack(fill=tk.X, padx=18, pady=(0, 12))
+
+        base_header = ctk.CTkFrame(shell, fg_color="transparent")
+        base_header.pack(fill=tk.X, padx=18)
+        ctk.CTkLabel(
+            base_header, text="FORMATO-BASE", font=("Segoe UI", 9, "bold"),
+            text_color=_COLORS["muted"], anchor="w",
+        ).pack(side=tk.LEFT)
+        ctk.CTkButton(
+            base_header, text="Ver prompt-base", width=112, height=26, corner_radius=7,
+            fg_color="#1A2942", hover_color="#263A5B", text_color="#D8E4FF", font=("Segoe UI", 9, "bold"),
+            command=lambda: self._show_profile_prompt(
+                _SUMMARY_TEMPLATE_CODES.get(template_value.get(), "meeting"),
+                f"Formato-base · {template_value.get()}",
+            ),
+        ).pack(side=tk.RIGHT)
+        template_selector = ctk.CTkComboBox(
+            shell, variable=template_value, values=_SUMMARY_TEMPLATE_LABELS, state="readonly",
+            height=34, corner_radius=9, fg_color="#0D1525", border_color="#2A3A58",
+            button_color="#263550", button_hover_color="#34476B", text_color=_COLORS["text"],
+            dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
+        )
+        template_selector.pack(fill=tk.X, padx=18, pady=(3, 6))
+        base_note = ctk.CTkFrame(shell, fg_color="#101C30", corner_radius=8)
+        base_note.pack(fill=tk.X, padx=18, pady=(0, 14))
+        base_note_label = ctk.CTkLabel(
+            base_note,
+            text="", font=("Segoe UI", 9), text_color="#C9D3FF", anchor="w", justify=tk.LEFT, wraplength=600,
+        )
+        base_note_label.pack(fill=tk.X, padx=10, pady=7)
+
+        field_label("PROMPT DESTE PERFIL")
+        instructions_editor = ctk.CTkTextbox(
+            shell, height=154, corner_radius=9, fg_color="#0D1525", border_width=1,
+            border_color="#2A3A58", text_color=_COLORS["text"], font=("Segoe UI", 10), wrap="word",
+        )
+        instructions_editor.pack(fill=tk.X, padx=18)
+        instructions_editor.insert("1.0", initial_instructions)
+        ctk.CTkLabel(
+            shell,
+            text="As regras técnicas de idioma e do formato de resposta continuam protegidas pelo aplicativo.",
+            font=("Segoe UI", 9), text_color="#C9D3FF", anchor="w", justify=tk.LEFT, wraplength=600,
+        ).pack(fill=tk.X, padx=18, pady=(4, 10))
+
+        seeded_prompt = [initial_instructions if use_base_initially else ""]
+
+        def seed_for_selected_template() -> str:
+            return profile_prompt_seed(_SUMMARY_TEMPLATE_CODES.get(template_value.get(), "meeting"))
+
+        def replace_editor(text: str) -> None:
+            instructions_editor.delete("1.0", tk.END)
+            instructions_editor.insert("1.0", text)
+
+        def confirm_replacement() -> bool:
+            current = instructions_editor.get("1.0", "end-1c").strip()
+            if not current or current == seeded_prompt[0].strip():
+                return True
+            return messagebox.askyesno(
+                "Substituir prompt?",
+                "Essa escolha substituirá o texto que você está editando. Deseja continuar?",
+                parent=dialog,
+            )
+
+        def refresh_start_mode(*_args: object) -> None:
+            use_base = start_mode_value.get() == "Usar prompt-base"
+            template_selector.configure(state="readonly" if use_base else tk.DISABLED)
+            if use_base:
+                base_note_label.configure(text="O prompt-base completo será carregado no editor para você adaptar e salvar como um perfil próprio.")
+                if confirm_replacement():
+                    seeded_prompt[0] = seed_for_selected_template()
+                    replace_editor(seeded_prompt[0])
+                else:
+                    start_mode_value.set("Começar em branco")
+                    refresh_start_mode()
+            else:
+                base_note_label.configure(
+                    text="Comece seu prompt do zero. Você define livremente as orientações e a estrutura do resumo.",
+                )
+                if confirm_replacement():
+                    replace_editor("")
+                    seeded_prompt[0] = ""
+                else:
+                    start_mode_value.set("Usar prompt-base")
+                    refresh_start_mode()
+
+        def change_base_template(_value: str) -> None:
+            if start_mode_value.get() != "Usar prompt-base":
+                return
+            if not confirm_replacement():
+                return
+            seeded_prompt[0] = seed_for_selected_template()
+            replace_editor(seeded_prompt[0])
+
+        start_mode_selector.configure(command=refresh_start_mode)
+        template_selector.configure(command=change_base_template)
+        if use_base_initially:
+            template_selector.configure(state="readonly")
+            base_note_label.configure(
+                text="O prompt-base completo foi carregado no editor, incluindo idioma, formato de resposta e estrutura. Edite-o e salve uma versão própria.",
+            )
+        else:
+            template_selector.configure(state=tk.DISABLED)
+            base_note_label.configure(
+                text="Comece seu prompt do zero. Você define livremente as orientações e a estrutura do resumo.",
+            )
+
+        preferences = ctk.CTkFrame(shell, fg_color="transparent")
+        preferences.pack(fill=tk.X, padx=18, pady=(0, 8))
+        ctk.CTkLabel(
+            preferences, text="Modelo Whisper", font=("Segoe UI", 9, "bold"),
+            text_color=_COLORS["muted"], anchor="w",
+        ).pack(side=tk.LEFT)
+        ctk.CTkComboBox(
+            preferences, variable=model_value, values=self._available_models, state="readonly",
+            width=132, height=32, corner_radius=8, fg_color="#0D1525", border_color="#2A3A58",
+            button_color="#263550", button_hover_color="#34476B", text_color=_COLORS["text"],
+            dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
+        ).pack(side=tk.RIGHT)
+        ctk.CTkCheckBox(
+            shell, text="Separar falantes quando houver token configurado", variable=speakers_value,
+            fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"], text_color=_COLORS["text"],
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor=tk.W, padx=18, pady=(0, 14))
+
+        actions = ctk.CTkFrame(shell, fg_color="transparent")
+        actions.pack(fill=tk.X, padx=18, pady=(0, 18))
+        ctk.CTkButton(
+            actions, text="Cancelar", command=dialog.destroy, width=82, height=34, corner_radius=8,
+            fg_color="#263550", hover_color="#34476B", text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
+        ).pack(side=tk.RIGHT)
+        ctk.CTkButton(
+            actions, text="Salvar alterações" if profile_id else "Salvar perfil",
+            command=lambda: self._save_summary_profile(
+                dialog, profile_id, name_value.get(),
+                template_value.get() if start_mode_value.get() == "Usar prompt-base" else "",
+                instructions_editor.get("1.0", "end-1c"), model_value.get(), speakers_value.get(),
+            ),
+            height=34, corner_radius=8, fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"],
+            text_color="#FFFFFF", font=("Segoe UI", 10, "bold"),
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.after(100, name_entry.focus_set)
+
+    def _save_summary_profile(
+        self,
+        dialog: ctk.CTkToplevel,
+        profile_id: str,
+        name: str,
+        base_template: str,
+        instructions: str,
+        model_size: str,
+        separate_speakers: bool,
+    ) -> None:
         from record_transcript_resume.summary_profiles import SummaryProfile, save_profile
 
         try:
             saved = save_profile(SummaryProfile(
-                id=self._editing_summary_profile_id or "",
-                name=self.summary_profile_name.get(),
-                base_template=_SUMMARY_TEMPLATE_CODES.get(self.summary_profile_template.get(), "meeting"),
-                instructions=self.summary_profile_instructions.get("1.0", "end-1c"),
-                model_size=self.summary_profile_model.get(),
-                separate_speakers=self.summary_profile_speakers.get(),
+                id=profile_id,
+                name=name,
+                base_template=_SUMMARY_TEMPLATE_CODES.get(base_template, "") if base_template else "",
+                instructions=instructions,
+                model_size=model_size,
+                separate_speakers=separate_speakers,
+                prompt_mode="custom",
             ))
         except ValueError as exc:
-            messagebox.showerror("Perfil incompleto", str(exc))
+            messagebox.showerror("Perfil incompleto", str(exc), parent=dialog)
             return
         self._refresh_summary_profile_choices()
-        self.processing_profile.set(f"Personalizado · {saved.name}")
-        self._hide_summary_profile_form()
+        self.processing_profile.set(f"Perfil salvo · {saved.name}")
+        dialog.destroy()
         messagebox.showinfo("Perfil salvo", "O perfil está disponível para gravações, importações e vídeos do YouTube.")
 
     def _render_api_provider_list(self) -> None:
@@ -2455,8 +2579,6 @@ class RecorderApp(ctk.CTk):
 
     def _set_summary_template_state(self, state: str) -> None:
         combobox_state = "readonly" if state == tk.NORMAL else state
-        self.template_selector.configure(state=combobox_state)
-        self.youtube_template_selector.configure(state=combobox_state)
         self.profile_selector.configure(state=combobox_state)
         self.youtube_profile_selector.configure(state=combobox_state)
 
@@ -3689,7 +3811,6 @@ class RecorderApp(ctk.CTk):
 
         provider_value = tk.StringVar(value=self.summary_provider.get())
         profile_value = tk.StringVar(value=self.processing_profile.get())
-        template_value = tk.StringVar(value=self.summary_template.get())
 
         def field_label(text: str) -> None:
             ctk.CTkLabel(
@@ -3706,52 +3827,20 @@ class RecorderApp(ctk.CTk):
         )
         provider_selector.pack(fill=tk.X, padx=16, pady=(0, 9))
 
-        profile_row = ctk.CTkFrame(shell, fg_color="transparent")
-        profile_row.pack(fill=tk.X, padx=16)
-        ctk.CTkLabel(
-            profile_row, text="PERFIL / PROMPT BASE", font=("Segoe UI", 9, "bold"),
-            text_color=_COLORS["muted"], anchor="w",
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        edit_profile_button = ctk.CTkButton(
-            profile_row, text="Editar perfil", width=88, height=25, corner_radius=7,
-            fg_color="transparent", hover_color="#22324F", border_width=1, border_color="#2A3A58",
-            text_color=_COLORS["brand_muted"], font=("Segoe UI", 9, "bold"),
-        )
-        edit_profile_button.pack(side=tk.RIGHT)
+        field_label("FORMATO DO RESUMO")
         profile_selector = ctk.CTkComboBox(
             shell, variable=profile_value, values=self._summary_profile_options(), state="readonly",
             height=34, corner_radius=9, fg_color="#0D1525", border_color="#2A3A58",
             button_color="#263550", button_hover_color="#34476B", text_color=_COLORS["text"],
             dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
         )
-        profile_selector.pack(fill=tk.X, padx=16, pady=(3, 9))
+        profile_selector.pack(fill=tk.X, padx=16, pady=(0, 9))
 
-        field_label("FORMATO DO RESUMO")
-        template_selector = ctk.CTkComboBox(
-            shell, variable=template_value, values=_SUMMARY_TEMPLATE_LABELS, state="readonly",
-            height=34, corner_radius=9, fg_color="#0D1525", border_color="#2A3A58",
-            button_color="#263550", button_hover_color="#34476B", text_color=_COLORS["text"],
-            dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
-        )
-        template_selector.pack(fill=tk.X, padx=16, pady=(0, 5))
-
-        prompt_actions = ctk.CTkFrame(shell, fg_color="transparent")
-        prompt_actions.pack(fill=tk.X, padx=16, pady=(0, 10))
         ctk.CTkLabel(
-            prompt_actions, text="Os perfis nativos são somente leitura; crie ou edite um perfil salvo para alterar sua base.",
+            shell, text="Escolha um formato nativo ou um perfil salvo. Para consultar ou editar prompts, use Ajustes › Resumos.",
             font=("Segoe UI", 9), text_color=_COLORS["brand_muted"], anchor="w", justify=tk.LEFT,
-            wraplength=400,
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        def selected_template_code() -> str:
-            return self._summary_template_code_for_choice(profile_value.get(), template_value.get())
-
-        ctk.CTkButton(
-            prompt_actions, text="Ver prompt", command=lambda: self._show_profile_prompt(
-                selected_template_code(), profile_value.get(),
-            ), width=82, height=28, corner_radius=7, fg_color="#263550", hover_color="#34476B",
-            text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
-        ).pack(side=tk.RIGHT)
+            wraplength=560,
+        ).pack(fill=tk.X, padx=16, pady=(0, 10))
 
         field_label("AJUSTES DESTA NOVA VERSÃO (OPCIONAL)")
         instructions_editor = ctk.CTkTextbox(
@@ -3765,35 +3854,8 @@ class RecorderApp(ctk.CTk):
             font=("Segoe UI", 9), text_color=_COLORS["brand_muted"], anchor="w",
         ).pack(fill=tk.X, padx=16, pady=(4, 12))
 
-        def sync_profile(profile_label: str) -> None:
-            custom = self._custom_summary_profile_for_label(profile_label)
-            if custom is not None:
-                template_value.set(_SUMMARY_TEMPLATE_NAMES_BY_CODE.get(getattr(custom, "base_template"), "Reunião"))
-                edit_profile_button.configure(state=tk.NORMAL)
-                template_selector.configure(state=tk.DISABLED)
-                return
-            template, _model, _speakers = _PROCESSING_PROFILES.get(profile_label, (None, None, None))
-            if template is not None:
-                template_value.set(template)
-            edit_profile_button.configure(state=tk.DISABLED)
-            template_selector.configure(state="readonly" if profile_label == "Personalizado" else tk.DISABLED)
-
-        def edit_saved_profile() -> None:
-            profile = self._custom_summary_profile_for_label(profile_value.get())
-            if profile is None:
-                messagebox.showinfo(
-                    "Perfil nativo", "Os perfis nativos podem ser consultados, mas não alterados. "
-                    "Use um perfil salvo para manter uma versão editável.", parent=dialog,
-                )
-                return
-            dialog.destroy()
-            self._show_page("settings")
-            self._show_settings_section("profiles")
-            self._edit_summary_profile(getattr(profile, "id"))
-
-        edit_profile_button.configure(command=edit_saved_profile)
-        profile_selector.configure(command=sync_profile)
-        sync_profile(profile_value.get())
+        def selected_template_code() -> str:
+            return self._summary_template_code_for_choice(profile_value.get(), "Reunião")
 
         actions = ctk.CTkFrame(shell, fg_color="transparent")
         actions.pack(fill=tk.X, padx=16, pady=(0, 16))

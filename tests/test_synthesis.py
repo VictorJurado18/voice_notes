@@ -13,6 +13,7 @@ from record_transcript_resume.synthesis import (
     SynthesisResult,
     _cli_executable,
     generate,
+    profile_prompt_seed,
     prompt_preview,
     provider_login_status,
     start_provider_login,
@@ -107,6 +108,31 @@ class SynthesisTests(unittest.TestCase):
         prompt = run.call_args.kwargs["input"]
         self.assertIn("Formato do resumo: Assessment", prompt)
         self.assertIn("Agrupe por competência", prompt)
+
+    def test_profile_prompt_seed_can_be_edited_and_saved_without_a_base(self) -> None:
+        from record_transcript_resume.summary_profiles import SummaryProfile
+
+        seed = profile_prompt_seed("meeting")
+        self.assertIn("## Contexto", seed)
+        self.assertIn("## Próximos passos", seed)
+        self.assertIn("Idioma obrigatório da resposta: português do Brasil", seed)
+        self.assertIn("<transcrição da reunião>", seed)
+
+        proc = _make_completed_process(json.dumps({"folder_name": "custom", "summary_md": "# Resumo"}))
+        profile = SummaryProfile(
+            id="custom", name="Meu prompt", base_template="", prompt_mode="custom",
+            instructions="Use somente as seções ## Achados e ## Recomendações.",
+        )
+        with (
+            patch("record_transcript_resume.summary_profiles.get_profile", return_value=profile),
+            patch("record_transcript_resume.synthesis.subprocess.run", return_value=proc) as run,
+        ):
+            generate("Transcription.", "2026-05-21", summary_template="custom:custom")
+
+        prompt = run.call_args.kwargs["input"]
+        self.assertIn("Use somente as seções ## Achados e ## Recomendações.", prompt)
+        self.assertIn("Transcrição:\nTranscription.", prompt)
+        self.assertIn("retorne SOMENTE um objeto JSON válido", prompt)
 
     def test_generate_adds_instructions_for_only_the_current_meeting(self) -> None:
         proc = _make_completed_process(json.dumps({"folder_name": "meeting", "summary_md": "# Resumo"}))

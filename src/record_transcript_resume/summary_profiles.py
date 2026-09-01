@@ -19,6 +19,9 @@ class SummaryProfile:
     instructions: str = ""
     model_size: str = "small"
     separate_speakers: bool = False
+    # Legacy profiles append instructions to their native base. New profiles
+    # persist the editable prompt authored in the profile dialog.
+    prompt_mode: str = "append"
 
 
 def _path(path: Path | None = None) -> Path:

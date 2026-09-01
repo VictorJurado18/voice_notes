@@ -56,13 +56,19 @@ Idioma obrigatório da resposta: português do Brasil. Escreva todo o título, t
 Responda SOMENTE com um objeto JSON válido, sem bloco de markdown e sem explicação:
 {{"folder_name": "<nome-curto-em-kebab-case-sem-data>", "summary_md": "<conteúdo-completo-do-resumo-em-markdown-em-português>"}}
 
-O campo summary_md deve ter um título conciso e as seguintes seções em markdown:
+O campo summary_md deve ter um título conciso e obedecer à estrutura em markdown abaixo:
 {sections}\
 """
 
 _CODEX_INSTRUCTION = """\
 Crie o resumo solicitado a partir da transcrição recebida pela entrada padrão.
 Respeite o idioma obrigatório definido no prompt e retorne apenas o objeto JSON válido solicitado, sem explicações nem bloco de markdown.
+"""
+
+_CUSTOM_PROFILE_SAFETY = """\
+
+Mantenha todo o resumo em português do Brasil, use somente informações sustentadas pela transcrição e retorne SOMENTE um objeto JSON válido, sem explicação nem bloco de markdown:
+{"folder_name": "<nome-curto-em-kebab-case-sem-data>", "summary_md": "<conteúdo-completo-do-resumo-em-markdown-em-português>"}
 """
 
 
@@ -100,21 +106,29 @@ def generate(
     is_api_provider = provider == "api" or provider.startswith("api:")
     if provider not in SUPPORTED_PROVIDERS and not is_api_provider:
         raise SynthesisError(f"Unsupported summary provider: {provider}")
-    template_label, sections, profile_instructions = _summary_structure(summary_template)
-    additional = additional_instructions.strip()
-    if additional:
-        profile_instructions += (
+    prompt = _saved_custom_profile_prompt(summary_template, date_str, transcription_text)
+    if prompt is None:
+        template_label, sections, profile_instructions = _summary_structure(summary_template)
+        additional = additional_instructions.strip()
+        if additional:
+            profile_instructions += (
+                "\nInstruções específicas desta gravação:\n"
+                f"{additional}\n"
+                "Priorize essas instruções sem inventar informações ausentes na transcrição.\n"
+            )
+        prompt = _PROMPT_TEMPLATE.format(
+            date=date_str,
+            template_label=template_label,
+            transcription=transcription_text,
+            profile_instructions=profile_instructions,
+            sections=sections,
+        )
+    elif additional_instructions.strip():
+        prompt += (
             "\nInstruções específicas desta gravação:\n"
-            f"{additional}\n"
+            f"{additional_instructions.strip()}\n"
             "Priorize essas instruções sem inventar informações ausentes na transcrição.\n"
         )
-    prompt = _PROMPT_TEMPLATE.format(
-        date=date_str,
-        template_label=template_label,
-        transcription=transcription_text,
-        profile_instructions=profile_instructions,
-        sections=sections,
-    )
     if is_api_provider:
         from record_transcript_resume.api_provider import generate as generate_api
         provider_id = provider.partition(":")[2] or None
@@ -153,6 +167,11 @@ def generate(
 
 def prompt_preview(summary_template: SummaryTemplate) -> str:
     """Return the read-only instruction used by a native or saved profile."""
+    custom_prompt = _saved_custom_profile_prompt(
+        summary_template, "<data da gravação>", "<transcrição da reunião>",
+    )
+    if custom_prompt is not None:
+        return custom_prompt
     template_label, sections, profile_instructions = _summary_structure(summary_template)
     return _PROMPT_TEMPLATE.format(
         date="<data da gravação>",
@@ -161,6 +180,38 @@ def prompt_preview(summary_template: SummaryTemplate) -> str:
         profile_instructions=profile_instructions,
         sections=sections,
     )
+
+
+def _saved_custom_profile_prompt(
+    summary_template: SummaryTemplate, date_str: str, transcription_text: str,
+) -> str | None:
+    """Render an editable saved profile directly, keeping output guarantees intact."""
+    if not summary_template.startswith("custom:"):
+        return None
+    from record_transcript_resume.summary_profiles import get_profile
+
+    profile = get_profile(summary_template.removeprefix("custom:"))
+    if profile is None:
+        raise SynthesisError("O perfil personalizado selecionado não está mais disponível.")
+    if profile.prompt_mode != "custom":
+        return None
+    prompt = profile.instructions.replace("<data da gravação>", date_str).replace(
+        "<transcrição da reunião>", transcription_text,
+    )
+    if "<transcrição da reunião>" not in profile.instructions:
+        prompt += f"\n\nTranscrição:\n{transcription_text}"
+    if "<data da gravação>" not in profile.instructions:
+        prompt += f"\n\nData da gravação: {date_str}"
+    return prompt.rstrip() + _CUSTOM_PROFILE_SAFETY
+
+
+def profile_prompt_seed(summary_template: SummaryTemplate, additions: str = "") -> str:
+    """Return the complete native prompt as an editable saved-profile starting point."""
+    template = summary_template if summary_template in SUMMARY_TEMPLATE_LABELS else DEFAULT_TEMPLATE
+    seed = prompt_preview(template)
+    if additions.strip():
+        seed += f"\n\nOrientações adicionais:\n{additions.strip()}"
+    return seed
 
 
 def _summary_structure(summary_template: SummaryTemplate) -> tuple[str, str, str]:
@@ -174,6 +225,13 @@ def _summary_structure(summary_template: SummaryTemplate) -> tuple[str, str, str
         profile = get_profile(summary_template.removeprefix("custom:"))
         if profile is None:
             raise SynthesisError("O perfil personalizado selecionado não está mais disponível.")
+        if profile.prompt_mode == "custom":
+            instructions = (
+                "\nPerfil personalizado escolhido pelo usuário:\n"
+                f"{profile.instructions}\n"
+                "Siga as instruções e a estrutura definidas neste perfil, sem inventar informações ausentes na transcrição.\n"
+            )
+            return profile.name, "Defina as seções em markdown de acordo com as instruções do perfil.", instructions
         base_sections = _TEMPLATE_SECTIONS.get(profile.base_template, _TEMPLATE_SECTIONS[DEFAULT_TEMPLATE])
         sections = "\n".join(f"## {section}" for section in base_sections)
         instructions = (
