@@ -318,6 +318,9 @@ class RecorderApp(ctk.CTk):
             value="O áudio é sempre salvo antes do processamento."
         )
         self._recording_deadline: float | None = None
+        self._processing_started_at: float | None = None
+        self._processing_activity = ""
+        self._processing_feedback = tk.StringVar(value="")
         self.last_file = tk.StringVar(value="-")
         self.disk_warning = tk.StringVar(value="")
         self.pipeline_language = tk.StringVar(value=_LANG_LABELS[0])
@@ -1217,6 +1220,21 @@ class RecorderApp(ctk.CTk):
             text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
         )
         self.retry_queue_button.pack(side=tk.RIGHT, padx=5, pady=4)
+        self._library_queue_row = queue_row
+        self.library_summary_progress_text = tk.StringVar(value="")
+        self._library_summary_progress = ctk.CTkFrame(
+            self._library_panel, fg_color="#17213A", corner_radius=9,
+            border_width=1, border_color="#34476B",
+        )
+        ctk.CTkLabel(
+            self._library_summary_progress, textvariable=self.library_summary_progress_text,
+            font=("Segoe UI", 10, "bold"), text_color="#D8D4FF", anchor="w",
+        ).pack(fill=tk.X, padx=10, pady=(8, 3))
+        self.library_summary_progressbar = ctk.CTkProgressBar(
+            self._library_summary_progress, height=4, corner_radius=2, mode="indeterminate",
+            fg_color="#263550", progress_color=_COLORS["accent"],
+        )
+        self.library_summary_progressbar.pack(fill=tk.X, padx=10, pady=(0, 8))
         self.library_search_entry = ctk.CTkEntry(
             self._library_panel, textvariable=self.library_search,
             placeholder_text="Buscar por título ou pasta", height=34, corner_radius=9,
@@ -1336,10 +1354,11 @@ class RecorderApp(ctk.CTk):
             text_color=_COLORS["danger"], font=("Segoe UI", 10, "bold"), state=tk.DISABLED,
         )
         self.cancel_processing_button.pack(side=tk.RIGHT)
-        ctk.CTkLabel(
-            self._processing_actions, text="O áudio já salvo será preservado.", font=("Segoe UI", 9),
+        self.processing_feedback_label = ctk.CTkLabel(
+            self._processing_actions, textvariable=self._processing_feedback, font=("Segoe UI", 9),
             text_color=_COLORS["muted"], anchor="w",
-        ).pack(side=tk.LEFT)
+        )
+        self.processing_feedback_label.pack(side=tk.LEFT)
 
         # Do not put a widget, icon, or overlay in the lower-right corner.
         # The root detects that small corner area directly, so the rounded
@@ -1507,14 +1526,24 @@ class RecorderApp(ctk.CTk):
         return next((profile for profile in self._summary_profiles if profile.name == name), None)
 
     def _selected_summary_template_code(self) -> str:
-        profile = self._custom_summary_profile_for_label(self.processing_profile.get())
+        return self._summary_template_code_for_choice(
+            self.processing_profile.get(), self.summary_template.get(),
+        )
+
+    def _summary_template_code_for_choice(self, profile_label: str, template_label: str) -> str:
+        """Resolve a profile/form choice without mutating the current screen."""
+        profile = self._custom_summary_profile_for_label(profile_label)
         if profile is not None:
             return f"custom:{getattr(profile, 'id')}"
-        return _SUMMARY_TEMPLATE_CODES.get(self.summary_template.get(), "meeting")
+        profile_template, _model, _speakers = _PROCESSING_PROFILES.get(profile_label, (None, None, None))
+        return _SUMMARY_TEMPLATE_CODES.get(profile_template or template_label, "meeting")
 
     def _show_selected_profile_prompt(self) -> None:
         """Show the exact summary instruction without making it editable here."""
-        template_code = self._selected_summary_template_code()
+        self._show_profile_prompt(self._selected_summary_template_code(), self.processing_profile.get())
+
+    def _show_profile_prompt(self, template_code: str, profile_label: str) -> None:
+        """Show a selected profile prompt from the normal or retry flow."""
         try:
             preview = prompt_preview(template_code)
         except Exception as exc:
@@ -1528,9 +1557,8 @@ class RecorderApp(ctk.CTk):
         dialog.configure(fg_color=_COLORS["bg"])
         dialog.transient(self)
         dialog.grab_set()
-        title = self.processing_profile.get()
         ctk.CTkLabel(
-            dialog, text=f"PROMPT DO PERFIL · {title}", font=("Segoe UI", 12, "bold"),
+            dialog, text=f"PROMPT DO PERFIL · {profile_label}", font=("Segoe UI", 12, "bold"),
             text_color=_COLORS["text"], anchor="w",
         ).pack(fill=tk.X, padx=18, pady=(18, 3))
         ctk.CTkLabel(
@@ -2369,7 +2397,8 @@ class RecorderApp(ctk.CTk):
         elif finalizing:
             label, color = "FINALIZANDO GRAVAÇÃO", _COLORS["warning"]
         elif processing:
-            label, color = "PROCESSANDO ÁUDIO", _COLORS["accent"]
+            activity = self._processing_activity or "Processando"
+            label, color = f"{activity.upper()}  {self.elapsed.get()}", _COLORS["accent"]
         elif "error" in self.status.get().casefold() or "falhou" in self.status.get().casefold():
             label, color = "ATENÇÃO NECESSÁRIA", _COLORS["danger"]
         else:
@@ -3109,7 +3138,7 @@ class RecorderApp(ctk.CTk):
         if not self._save_open_document():
             return
         self._close_transcript_editor()
-        self._start_summary_retry(transcript_path)
+        self._open_summary_regeneration_dialog(transcript_path)
 
     def _suggest_speaker_names(self) -> None:
         if not self._editor_is_transcript:
@@ -3192,7 +3221,7 @@ class RecorderApp(ctk.CTk):
         if item is None or item.transcript_path is None:
             messagebox.showinfo("Transcrição indisponível", "Esta gravação ainda não tem transcrição para resumir.")
             return
-        self._start_summary_retry(item.transcript_path)
+        self._open_summary_regeneration_dialog(item.transcript_path)
 
     def _tray_can_start_meeting(self) -> bool:
         recording = self._service is not None and self._service.state == RecordingState.RECORDING
@@ -3268,6 +3297,7 @@ class RecorderApp(ctk.CTk):
         self.process_button.configure(state=tk.DISABLED)
         self.retry_summary_button.configure(state=tk.DISABLED)
         self.youtube_process_button.configure(state=tk.DISABLED)
+        self.library_summary_button.configure(state=tk.DISABLED)
         self.provider_selector.configure(state=tk.DISABLED)
         self._set_summary_template_state(tk.DISABLED)
         self._set_navigation_state(tk.DISABLED)
@@ -3536,7 +3566,7 @@ class RecorderApp(ctk.CTk):
         if transcript_path is None:
             return
         self._toggle_text_import()
-        self._start_summary_retry(transcript_path)
+        self._open_summary_regeneration_dialog(transcript_path)
 
     def _queue_pipeline(
         self,
@@ -3633,32 +3663,197 @@ class RecorderApp(ctk.CTk):
             )
             return
 
-        self._start_summary_retry(transcript_path)
+        self._open_summary_regeneration_dialog(transcript_path)
 
-    def _start_summary_retry(self, transcript_path: Path) -> None:
+    def _open_summary_regeneration_dialog(self, transcript_path: Path) -> None:
+        """Let the user choose the next summary instruction before regenerating."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Gerar nova versão do resumo")
+        dialog.geometry("620x620")
+        dialog.minsize(520, 520)
+        dialog.configure(fg_color=_COLORS["bg"])
+        dialog.transient(self)
+        dialog.grab_set()
+        shell = ctk.CTkFrame(dialog, fg_color=_COLORS["surface"], corner_radius=16)
+        shell.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        ctk.CTkLabel(
+            shell, text="Gerar nova versão do resumo", font=("Segoe UI", 15, "bold"),
+            text_color=_COLORS["text"], anchor="w",
+        ).pack(fill=tk.X, padx=16, pady=(16, 2))
+        ctk.CTkLabel(
+            shell,
+            text="A transcrição permanece intacta. O resumo atual só será substituído se a nova geração terminar com sucesso.",
+            font=("Segoe UI", 10), text_color=_COLORS["muted"], anchor="w", justify=tk.LEFT,
+            wraplength=560,
+        ).pack(fill=tk.X, padx=16, pady=(0, 14))
+
+        provider_value = tk.StringVar(value=self.summary_provider.get())
+        profile_value = tk.StringVar(value=self.processing_profile.get())
+        template_value = tk.StringVar(value=self.summary_template.get())
+
+        def field_label(text: str) -> None:
+            ctk.CTkLabel(
+                shell, text=text, font=("Segoe UI", 9, "bold"),
+                text_color=_COLORS["muted"], anchor="w",
+            ).pack(fill=tk.X, padx=16, pady=(0, 3))
+
+        field_label("PROVIDER DO RESUMO")
+        provider_selector = ctk.CTkComboBox(
+            shell, variable=provider_value, values=self._summary_provider_options(), state="readonly",
+            height=34, corner_radius=9, fg_color="#0D1525", border_color="#2A3A58",
+            button_color="#263550", button_hover_color="#34476B", text_color=_COLORS["text"],
+            dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
+        )
+        provider_selector.pack(fill=tk.X, padx=16, pady=(0, 9))
+
+        profile_row = ctk.CTkFrame(shell, fg_color="transparent")
+        profile_row.pack(fill=tk.X, padx=16)
+        ctk.CTkLabel(
+            profile_row, text="PERFIL / PROMPT BASE", font=("Segoe UI", 9, "bold"),
+            text_color=_COLORS["muted"], anchor="w",
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        edit_profile_button = ctk.CTkButton(
+            profile_row, text="Editar perfil", width=88, height=25, corner_radius=7,
+            fg_color="transparent", hover_color="#22324F", border_width=1, border_color="#2A3A58",
+            text_color=_COLORS["brand_muted"], font=("Segoe UI", 9, "bold"),
+        )
+        edit_profile_button.pack(side=tk.RIGHT)
+        profile_selector = ctk.CTkComboBox(
+            shell, variable=profile_value, values=self._summary_profile_options(), state="readonly",
+            height=34, corner_radius=9, fg_color="#0D1525", border_color="#2A3A58",
+            button_color="#263550", button_hover_color="#34476B", text_color=_COLORS["text"],
+            dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
+        )
+        profile_selector.pack(fill=tk.X, padx=16, pady=(3, 9))
+
+        field_label("FORMATO DO RESUMO")
+        template_selector = ctk.CTkComboBox(
+            shell, variable=template_value, values=_SUMMARY_TEMPLATE_LABELS, state="readonly",
+            height=34, corner_radius=9, fg_color="#0D1525", border_color="#2A3A58",
+            button_color="#263550", button_hover_color="#34476B", text_color=_COLORS["text"],
+            dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
+        )
+        template_selector.pack(fill=tk.X, padx=16, pady=(0, 5))
+
+        prompt_actions = ctk.CTkFrame(shell, fg_color="transparent")
+        prompt_actions.pack(fill=tk.X, padx=16, pady=(0, 10))
+        ctk.CTkLabel(
+            prompt_actions, text="Os perfis nativos são somente leitura; crie ou edite um perfil salvo para alterar sua base.",
+            font=("Segoe UI", 9), text_color=_COLORS["brand_muted"], anchor="w", justify=tk.LEFT,
+            wraplength=400,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        def selected_template_code() -> str:
+            return self._summary_template_code_for_choice(profile_value.get(), template_value.get())
+
+        ctk.CTkButton(
+            prompt_actions, text="Ver prompt", command=lambda: self._show_profile_prompt(
+                selected_template_code(), profile_value.get(),
+            ), width=82, height=28, corner_radius=7, fg_color="#263550", hover_color="#34476B",
+            text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
+        ).pack(side=tk.RIGHT)
+
+        field_label("AJUSTES DESTA NOVA VERSÃO (OPCIONAL)")
+        instructions_editor = ctk.CTkTextbox(
+            shell, height=92, corner_radius=9, fg_color="#0D1525", border_width=1,
+            border_color="#2A3A58", text_color=_COLORS["text"], font=("Segoe UI", 10), wrap="word",
+        )
+        instructions_editor.pack(fill=tk.X, padx=16)
+        instructions_editor.insert("1.0", RecorderApp._meeting_instructions(self))
+        ctk.CTkLabel(
+            shell, text="Ex.: reorganize por objetivos, destaque riscos e não inclua pontos sem evidência na transcrição.",
+            font=("Segoe UI", 9), text_color=_COLORS["brand_muted"], anchor="w",
+        ).pack(fill=tk.X, padx=16, pady=(4, 12))
+
+        def sync_profile(profile_label: str) -> None:
+            custom = self._custom_summary_profile_for_label(profile_label)
+            if custom is not None:
+                template_value.set(_SUMMARY_TEMPLATE_NAMES_BY_CODE.get(getattr(custom, "base_template"), "Reunião"))
+                edit_profile_button.configure(state=tk.NORMAL)
+                template_selector.configure(state=tk.DISABLED)
+                return
+            template, _model, _speakers = _PROCESSING_PROFILES.get(profile_label, (None, None, None))
+            if template is not None:
+                template_value.set(template)
+            edit_profile_button.configure(state=tk.DISABLED)
+            template_selector.configure(state="readonly" if profile_label == "Personalizado" else tk.DISABLED)
+
+        def edit_saved_profile() -> None:
+            profile = self._custom_summary_profile_for_label(profile_value.get())
+            if profile is None:
+                messagebox.showinfo(
+                    "Perfil nativo", "Os perfis nativos podem ser consultados, mas não alterados. "
+                    "Use um perfil salvo para manter uma versão editável.", parent=dialog,
+                )
+                return
+            dialog.destroy()
+            self._show_page("settings")
+            self._show_settings_section("profiles")
+            self._edit_summary_profile(getattr(profile, "id"))
+
+        edit_profile_button.configure(command=edit_saved_profile)
+        profile_selector.configure(command=sync_profile)
+        sync_profile(profile_value.get())
+
+        actions = ctk.CTkFrame(shell, fg_color="transparent")
+        actions.pack(fill=tk.X, padx=16, pady=(0, 16))
+        ctk.CTkButton(
+            actions, text="Cancelar", command=dialog.destroy, width=82, height=34, corner_radius=8,
+            fg_color="#263550", hover_color="#34476B", text_color=_COLORS["text"],
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side=tk.RIGHT)
+
+        def generate_summary() -> None:
+            provider = self._api_provider_labels.get(
+                provider_value.get(), _SUMMARY_PROVIDER_CODES.get(provider_value.get(), "codex"),
+            )
+            instructions = instructions_editor.get("1.0", "end-1c").strip()
+            dialog.destroy()
+            self._start_summary_retry(
+                transcript_path, provider=provider, summary_template=selected_template_code(),
+                additional_instructions=instructions,
+            )
+
+        ctk.CTkButton(
+            actions, text="Gerar nova versão", command=generate_summary, height=34, corner_radius=8,
+            fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"], text_color="#FFFFFF",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+    def _start_summary_retry(
+        self,
+        transcript_path: Path,
+        *,
+        provider: str | None = None,
+        summary_template: str | None = None,
+        additional_instructions: str | None = None,
+    ) -> None:
         """Regenerate a saved summary, preserving the audio and transcription."""
-        provider = self._selected_summary_provider_code()
-        summary_template = self._selected_summary_template_code()
-        additional_instructions = RecorderApp._meeting_instructions(self)
+        provider = provider or self._selected_summary_provider_code()
+        summary_template = summary_template or self._selected_summary_template_code()
+        instructions_were_explicitly_chosen = additional_instructions is not None
+        if additional_instructions is None:
+            additional_instructions = RecorderApp._meeting_instructions(self)
         self.start_button.configure(state=tk.DISABLED)
         self.process_button.configure(state=tk.DISABLED)
         self.retry_summary_button.configure(state=tk.DISABLED)
         self.youtube_process_button.configure(state=tk.DISABLED)
+        self.library_summary_button.configure(state=tk.DISABLED)
         self.provider_selector.configure(state=tk.DISABLED)
         self._set_summary_template_state(tk.DISABLED)
         self._set_navigation_state(tk.DISABLED)
-        self.status.set("Preparando nova tentativa de resumo...")
+        self.status.set("Gerando nova versão do resumo…")
         self.last_file.set(str(transcript_path.parent))
-        self.progressbar.pack(fill=tk.X, padx=20, pady=(4, 0))
-        self.progressbar.start()
+        self._show_summary_retry_progress()
         self._pipeline_thread = threading.Thread(
             target=self._retry_summary_worker,
             args=(transcript_path, provider, summary_template, additional_instructions),
             daemon=True,
         )
         self._pipeline_thread.start()
-        if additional_instructions:
+        if instructions_were_explicitly_chosen or additional_instructions:
             self._clear_meeting_instructions()
+        self._tray.notify("Voice Notes", "Gerando uma nova versão do resumo em segundo plano.")
 
     def _retry_summary_worker(
         self, transcript_path: Path, provider: str, summary_template: str, additional_instructions: str,
@@ -3673,7 +3868,7 @@ class RecorderApp(ctk.CTk):
                 provider=provider,  # type: ignore[arg-type]
                 summary_template=summary_template,  # type: ignore[arg-type]
                 additional_instructions=additional_instructions,
-                on_status=lambda message: self.after(0, self.status.set, message),
+                on_status=lambda _message: self.after(0, self._set_processing_status, "Gerando nova versão do resumo…"),
             )
         except Exception as exc:
             log(f"GUI: summary retry failed: {type(exc).__name__}: {exc}")
@@ -3682,18 +3877,16 @@ class RecorderApp(ctk.CTk):
         self.after(0, self._on_summary_retry_done, summary_path)
 
     def _on_summary_retry_done(self, summary_path: Path) -> None:
-        self.progressbar.stop()
-        self.progressbar.pack_forget()
         self.status.set("Resumo atualizado com sucesso")
         self.last_file.set(str(summary_path.parent))
         self._restore_after_processing()
         self._refresh_library()
+        self._tray.notify("Resumo concluído", f"Nova versão salva em {summary_path.parent.name}.")
 
     def _on_summary_retry_error(self, message: str) -> None:
-        self.progressbar.stop()
-        self.progressbar.pack_forget()
         self.status.set("Não foi possível gerar o resumo")
         self._restore_after_processing()
+        self._tray.notify("Resumo não concluído", "Verifique o provider e tente gerar novamente.")
         messagebox.showerror(
             "Nova tentativa não concluída",
             f"{message}\n\nA transcrição foi preservada. Você pode corrigir o login ou trocar o provider e tentar novamente.\n\n{_log_hint()}",
@@ -3706,6 +3899,7 @@ class RecorderApp(ctk.CTk):
         self.process_button.configure(state=tk.NORMAL)
         self.retry_summary_button.configure(state=tk.NORMAL)
         self.youtube_process_button.configure(state=tk.NORMAL)
+        self.library_summary_button.configure(state=tk.NORMAL)
         self.provider_selector.configure(state="readonly")
         self._set_summary_template_state(tk.NORMAL)
         self._set_navigation_state(tk.NORMAL)
@@ -3715,10 +3909,39 @@ class RecorderApp(ctk.CTk):
         """Expose one deliberate escape route while the isolated worker starts."""
         self._processing_cancel_requested = False
         self._pipeline_process = None
+        self._processing_started_at = time.monotonic()
+        self._processing_activity = "Processando áudio"
+        self._processing_feedback.set("Processando em segundo plano · o áudio salvo será preservado.")
         self.progressbar.pack(fill=tk.X, padx=20, pady=(4, 0))
         self.progressbar.start()
         self._processing_actions.pack(fill=tk.X, padx=20, pady=(7, 0))
+        self.cancel_processing_button.pack(side=tk.RIGHT)
         self.cancel_processing_button.configure(text="Preparando processamento…", state=tk.DISABLED)
+
+    def _show_summary_retry_progress(self) -> None:
+        """Provide clear progress while a provider generates a replacement summary."""
+        self._processing_started_at = time.monotonic()
+        self._processing_activity = "Gerando resumo"
+        self._processing_feedback.set("Gerando nova versão em segundo plano · o resumo atual será preservado até concluir.")
+        self.progressbar.pack(fill=tk.X, padx=20, pady=(4, 0))
+        self.progressbar.start()
+        self._processing_actions.pack(fill=tk.X, padx=20, pady=(7, 0))
+        self.cancel_processing_button.pack_forget()
+        self.library_summary_progress_text.set("Gerando nova versão do resumo · 00:00")
+        self._library_summary_progress.pack(
+            fill=tk.X, padx=14, pady=(0, 7), after=self._library_queue_row,
+        )
+        self.library_summary_progressbar.start()
+
+    def _set_processing_status(self, status: str) -> None:
+        self.status.set(status)
+        normalized = status.casefold()
+        if "resumo" in normalized or "summary" in normalized:
+            self._processing_activity = "Gerando resumo"
+        elif "transcri" in normalized or "transcrib" in normalized:
+            self._processing_activity = "Transcrevendo áudio"
+        elif "falante" in normalized or "speaker" in normalized:
+            self._processing_activity = "Separando falantes"
 
     def _hide_cancellable_progress(self) -> None:
         self.progressbar.stop()
@@ -3728,6 +3951,12 @@ class RecorderApp(ctk.CTk):
         self._pipeline_process = None
         self._processing_cancel_requested = False
         self._pipeline_has_speaker_separation = False
+        self._processing_started_at = None
+        self._processing_activity = ""
+        self._processing_feedback.set("")
+        if hasattr(self, "library_summary_progressbar"):
+            self.library_summary_progressbar.stop()
+            self._library_summary_progress.pack_forget()
 
     def _set_pipeline_process_ready(self, process: object) -> None:
         if self._processing_cancel_requested:
@@ -3804,7 +4033,7 @@ class RecorderApp(ctk.CTk):
                 stage = self._pipeline_stage_label(msg)
                 if job_id is not None:
                     self._job_store.update(job_id, status="running", stage=stage, error="")
-                self.after(0, self.status.set, stage)
+                self.after(0, self._set_processing_status, stage)
 
             self._pipeline_thread = threading.Thread(
                 target=self._pipeline_worker,
@@ -4096,6 +4325,15 @@ class RecorderApp(ctk.CTk):
                     # second stop while the finalization worker starts.
                     self._recording_deadline = None
                     self.after_idle(lambda: self._stop_recording(automatic=True))
+        elif self._processing_started_at is not None:
+            seconds = int(time.monotonic() - self._processing_started_at)
+            duration = self._format_duration(seconds)
+            self.elapsed.set(duration)
+            activity = self._processing_activity or "Processando"
+            self.recording_limit_hint.set(f"{activity} há {duration} · você pode minimizar ou ocultar o app.")
+            self._processing_feedback.set(f"{activity} em segundo plano há {duration}.")
+            if hasattr(self, "library_summary_progress_text"):
+                self.library_summary_progress_text.set(f"{activity} · {duration} · em segundo plano")
         else:
             self.elapsed.set("00:00")
 
