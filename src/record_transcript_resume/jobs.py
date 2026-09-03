@@ -36,6 +36,7 @@ class ProcessingJob:
     output_mode: str = "both"
     transcription_provider: str = "local"
     additional_instructions: str = ""
+    separate_speakers: bool = False
 
     @property
     def audio_path(self) -> Path:
@@ -76,6 +77,7 @@ class JobStore:
         output_mode: str = "both",
         transcription_provider: str = "local",
         additional_instructions: str = "",
+        separate_speakers: bool = False,
     ) -> ProcessingJob:
         jobs = self.list()
         normalized = str(mp3_path.resolve())
@@ -98,6 +100,7 @@ class JobStore:
             output_mode=output_mode,
             transcription_provider=transcription_provider,
             additional_instructions=additional_instructions,
+            separate_speakers=separate_speakers,
         )
         self._save([*jobs, job])
         return job

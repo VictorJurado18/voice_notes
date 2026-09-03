@@ -46,3 +46,13 @@ def test_job_store_preserves_meeting_specific_instructions(tmp_path: Path) -> No
     persisted = store.list()[0]
     assert persisted.id == job.id
     assert persisted.additional_instructions == "Liste riscos e responsáveis."
+
+
+def test_job_store_snapshots_speaker_choice(tmp_path: Path) -> None:
+    mp3 = tmp_path / "recording.mp3"
+    mp3.write_bytes(b"audio")
+    store = JobStore(tmp_path / "jobs.json")
+
+    store.enqueue(mp3, tmp_path, "pt", "small", "codex", "meeting", separate_speakers=True)
+
+    assert store.list()[0].separate_speakers is True

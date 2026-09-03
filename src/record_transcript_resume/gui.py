@@ -16,6 +16,7 @@ import customtkinter as ctk
 
 from record_transcript_resume.errors import DiskSpaceError, RecordingError
 from record_transcript_resume.paths import default_output_dir
+from record_transcript_resume.preferences import load_summary_provider, save_summary_provider
 from record_transcript_resume.recording import MIN_FREE_BYTES, RecordingConfig, RecordingService, RecordingState
 from record_transcript_resume.transcription import available_models
 from record_transcript_resume.windows_audio_backend import WindowsAudioBackend, WindowsAudioBackendConfig
@@ -275,10 +276,11 @@ class RecorderApp(ctk.CTk):
         self._last_output: Path | None = None
         self._stop_thread: threading.Thread | None = None
         self._pipeline_thread: threading.Thread | None = None
+        self._youtube_download_thread: threading.Thread | None = None
         self._pipeline_process: object | None = None
+        self._active_job_id: str | None = None
         self._processing_cancel_requested = False
         self._pipeline_has_speaker_separation = False
-        self._pending_jobs: list[ProcessingJob] = []
         self._job_store = JobStore()
         self._library_items: list[LibraryItem] = []
         self._library_open = False
@@ -314,8 +316,8 @@ class RecorderApp(ctk.CTk):
         self.recording_limit_value = tk.StringVar(value="")
         self.recording_limit_unit = tk.StringVar(value="minutos")
         self.recording_limit_hint = tk.StringVar(value="Sem parada automática")
-        self.recording_output_mode = tk.StringVar(value="both")
-        self.recording_output_choice = tk.StringVar(value=_RECORDING_OUTPUT_LABELS["both"])
+        self.recording_output_mode = tk.StringVar(value="audio")
+        self.recording_output_choice = tk.StringVar(value=_RECORDING_OUTPUT_LABELS["audio"])
         self.recording_output_hint = tk.StringVar(
             value="O áudio é sempre salvo antes do processamento."
         )
@@ -338,6 +340,8 @@ class RecorderApp(ctk.CTk):
         from record_transcript_resume.api_provider import ApiProviderConfig, load_configs
         self._api_provider_configs = load_configs()
         self._api_provider_labels: dict[str, str] = {}
+        self._preferred_summary_provider_code = load_summary_provider()
+        self._restore_summary_provider_choice()
         self._editing_api_provider_id: str | None = None
         api_defaults = ApiProviderConfig()
         self.api_provider_name = tk.StringVar(value=api_defaults.name)
@@ -510,6 +514,7 @@ class RecorderApp(ctk.CTk):
             ("file", "Arquivo", self._show_file_import),
             ("youtube", "YouTube", self._toggle_youtube),
             ("library", "Biblioteca", self._toggle_library),
+            ("processing", "Processos", self._show_processing_page),
             ("settings", "Ajustes", self._toggle_settings),
         ]:
             button = ctk.CTkButton(
@@ -523,6 +528,7 @@ class RecorderApp(ctk.CTk):
         self.file_page_button = self._page_buttons["file"]
         self.youtube_page_button = self._page_buttons["youtube"]
         self.library_button = self._page_buttons["library"]
+        self.processing_button = self._page_buttons["processing"]
         self.settings_button = self._page_buttons["settings"]
 
         # Pages with many controls must scroll inside the widget instead of
@@ -646,15 +652,11 @@ class RecorderApp(ctk.CTk):
             recording_output_row, text="DEPOIS DE PARAR", font=("Segoe UI", 9, "bold"),
             text_color=_COLORS["muted"], width=100, anchor="w",
         ).pack(side=tk.LEFT)
-        self.recording_output_selector = ctk.CTkComboBox(
-            recording_output_row, variable=self.recording_output_choice,
-            values=[label for label, _value in _RECORDING_OUTPUT_OPTIONS], command=self._on_recording_output_choice,
-            state="readonly", height=34, corner_radius=9, fg_color="#0D1525",
-            border_color="#2A3A58", button_color="#263550", button_hover_color="#34476B",
-            text_color=_COLORS["text"], dropdown_fg_color="#162136",
-            dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
-        )
-        self.recording_output_selector.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ctk.CTkLabel(
+            recording_output_row,
+            text="Salvar áudio · processe depois pela Biblioteca",
+            font=("Segoe UI", 10), text_color="#C9D3FF", anchor="w",
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
         ctk.CTkFrame(capture_card, height=1, fg_color="#253552").pack(fill=tk.X, padx=14)
         preferences_row = ctk.CTkFrame(capture_card, fg_color="transparent")
         preferences_row.pack(fill=tk.X, padx=14, pady=(8, 10))
@@ -1195,12 +1197,18 @@ class RecorderApp(ctk.CTk):
         self.library_open_summary_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(7, 0))
         library_actions = ctk.CTkFrame(self._library_panel, fg_color="transparent")
         library_actions.pack(fill=tk.X, padx=14, pady=(0, 10))
-        self.library_summary_button = ctk.CTkButton(
-            library_actions, text="Gerar resumo", command=self._regenerate_selected_summary,
+        self.library_process_button = ctk.CTkButton(
+            library_actions, text="Processar áudio", command=self._process_selected_library_audio,
             height=34, corner_radius=9, fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"],
             text_color="#FFFFFF", font=("Segoe UI", 10, "bold"),
         )
-        self.library_summary_button.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.library_process_button.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.library_summary_button = ctk.CTkButton(
+            library_actions, text="Gerar resumo", command=self._regenerate_selected_summary,
+            height=34, corner_radius=9, fg_color="#244462", hover_color="#315A80",
+            text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
+        )
+        self.library_summary_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(7, 0))
         self.library_open_button = ctk.CTkButton(
             library_actions, text="Abrir pasta", command=self._open_selected_folder,
             height=34, corner_radius=9, fg_color="#263550", hover_color="#34476B",
@@ -1255,6 +1263,28 @@ class RecorderApp(ctk.CTk):
             text_color="#FFFFFF", font=("Segoe UI", 10, "bold"),
         )
         self.library_regenerate_button.pack(side=tk.RIGHT, padx=(0, 7))
+
+        self._processing_panel = ctk.CTkFrame(
+            content, fg_color="#111A2C", corner_radius=14, border_width=1, border_color="#2A3A58",
+        )
+        processing_header = ctk.CTkFrame(self._processing_panel, fg_color="transparent")
+        processing_header.pack(fill=tk.X, padx=14, pady=(12, 4))
+        ctk.CTkLabel(
+            processing_header, text="PROCESSAMENTOS", font=("Segoe UI", 10, "bold"),
+            text_color=_COLORS["text"], anchor="w",
+        ).pack(side=tk.LEFT)
+        ctk.CTkButton(
+            processing_header, text="Atualizar", command=self._refresh_processing_page, width=78, height=28,
+            corner_radius=8, fg_color="#263550", hover_color="#34476B", text_color=_COLORS["text"],
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side=tk.RIGHT)
+        self.processing_overview = tk.StringVar(value="Nenhum processamento na fila")
+        ctk.CTkLabel(
+            self._processing_panel, textvariable=self.processing_overview, font=("Segoe UI", 10),
+            text_color=_COLORS["muted"], anchor="w", wraplength=500, justify=tk.LEFT,
+        ).pack(fill=tk.X, padx=14, pady=(0, 10))
+        self.processing_job_list = ctk.CTkFrame(self._processing_panel, fg_color="#0D1525", corner_radius=10)
+        self.processing_job_list.pack(fill=tk.X, padx=14, pady=(0, 12))
 
         # Barra de progresso do pipeline
         self.progressbar = ctk.CTkProgressBar(
@@ -1360,6 +1390,9 @@ class RecorderApp(ctk.CTk):
             "library": [
                 (self._library_panel, {"fill": tk.BOTH, "expand": True, "padx": 20, "pady": (12, 10)}),
             ],
+            "processing": [
+                (self._processing_panel, {"fill": tk.BOTH, "expand": True, "padx": 20, "pady": (12, 10)}),
+            ],
             "settings": [
                 (self._settings_panel, {"fill": tk.X, "padx": 20, "pady": (12, 10)}),
             ],
@@ -1391,6 +1424,30 @@ class RecorderApp(ctk.CTk):
             _SUMMARY_PROVIDER_CODES.get(self.summary_provider.get(), "codex"),
         )
 
+    def _label_for_summary_provider_code(self, provider_code: str) -> str | None:
+        """Resolve a persisted provider code to the current visible label."""
+        native_label = next(
+            (label for label, code in _SUMMARY_PROVIDER_CODES.items() if code == provider_code),
+            None,
+        )
+        if native_label is not None:
+            return native_label
+        return next(
+            (label for label, code in self._api_provider_labels.items() if code == provider_code),
+            None,
+        )
+
+    def _restore_summary_provider_choice(self, provider_code: str | None = None) -> bool:
+        """Restore a saved choice, falling back only when its provider vanished."""
+        self._summary_provider_options()
+        desired_code = provider_code if provider_code is not None else self._preferred_summary_provider_code
+        label = self._label_for_summary_provider_code(desired_code)
+        if label is None:
+            self.summary_provider.set("Codex")
+            return False
+        self.summary_provider.set(label)
+        return True
+
     def _transcription_source_options(self) -> list[str]:
         self._summary_provider_options()
         compatible_ids = {
@@ -1416,6 +1473,7 @@ class RecorderApp(ctk.CTk):
     def _refresh_api_provider_choices(self) -> None:
         from record_transcript_resume.api_provider import load_configs
 
+        current_code = self._selected_summary_provider_code()
         self._api_provider_configs = load_configs()
         values = self._summary_provider_options()
         if hasattr(self, "provider_selector"):
@@ -1423,8 +1481,8 @@ class RecorderApp(ctk.CTk):
         transcription_values = self._transcription_source_options()
         if hasattr(self, "transcription_source_selector"):
             self.transcription_source_selector.configure(values=transcription_values)
-        if self.summary_provider.get() not in values:
-            self.summary_provider.set("Codex")
+        desired_code = self._preferred_summary_provider_code or current_code
+        self._restore_summary_provider_choice(desired_code)
         if self.transcription_source.get() not in transcription_values:
             self.transcription_source.set("Whisper local")
         if hasattr(self, "api_provider_list"):
@@ -1884,6 +1942,14 @@ class RecorderApp(ctk.CTk):
         self.provider_hint.set(f"Resumo por {self.summary_provider.get()}  ·  altere em Ajustes")
 
     def _on_provider_changed(self, *_: object) -> None:
+        provider_code = self._selected_summary_provider_code()
+        self._preferred_summary_provider_code = provider_code
+        try:
+            save_summary_provider(provider_code)
+        except OSError:
+            # The active UI selection remains valid even if the disk is
+            # temporarily unavailable; never make provider selection fail.
+            pass
         self._refresh_provider_hint()
         self.after_idle(self._check_provider_login)
 
@@ -2529,7 +2595,7 @@ class RecorderApp(ctk.CTk):
             label, color = "PRONTO PARA GRAVAR", _COLORS["success"]
         self._compact_status.set(label)
         self._compact_indicator.configure(fg_color=color)
-        self.compact_start_button.configure(state=tk.DISABLED if recording or finalizing or processing else tk.NORMAL)
+        self.compact_start_button.configure(state=tk.DISABLED if recording or finalizing else tk.NORMAL)
         self.compact_stop_button.configure(state=tk.NORMAL if recording else tk.DISABLED)
 
     def _hide_to_tray(self) -> None:
@@ -2568,7 +2634,9 @@ class RecorderApp(ctk.CTk):
     def _set_capture_preferences_state(self, state: str) -> None:
         for button in self._source_buttons:
             button.configure(state=state)
-        self.recording_output_selector.configure(state="readonly" if state == tk.NORMAL else state)
+        selector = getattr(self, "recording_output_selector", None)
+        if selector is not None:
+            selector.configure(state="readonly" if state == tk.NORMAL else state)
         self.output_entry.configure(state=state)
         self.output_browse_button.configure(state=state)
         self.recording_limit_entry.configure(state=state)
@@ -2705,6 +2773,7 @@ class RecorderApp(ctk.CTk):
             "file": ("Arquivo", "Importe uma gravação já existente"),
             "youtube": ("YouTube", "Importe um vídeo autorizado para transcrever"),
             "library": ("Biblioteca", "Encontre, revise e retome seus resultados"),
+            "processing": ("Processamentos", "Acompanhe a fila e continue usando o aplicativo"),
             "settings": ("Ajustes", "Defina como o Voice Notes deve processar"),
         }
         title, hint = page_titles[page]
@@ -2722,6 +2791,8 @@ class RecorderApp(ctk.CTk):
         self._library_open = page == "library"
         if page == "library":
             self._refresh_library()
+        if page == "processing":
+            self._refresh_processing_page()
         if page == "settings":
             self._show_settings_section(getattr(self, "_active_settings_section", "provider"))
         self._schedule_widget_rounding()
@@ -2882,6 +2953,9 @@ class RecorderApp(ctk.CTk):
     def _toggle_library(self) -> None:
         self._show_page("library")
 
+    def _show_processing_page(self) -> None:
+        self._show_page("processing")
+
     def _refresh_library(self) -> None:
         self._library_items = discover_recordings(Path(self.output_dir.get() or default_output_dir()))
         pending = [job for job in self._job_store.list() if job.status in {"queued", "running", "failed", "needs_attention"}]
@@ -2890,10 +2964,14 @@ class RecorderApp(ctk.CTk):
             self.retry_queue_button.configure(state=tk.DISABLED)
         else:
             failed = sum(job.status in {"failed", "needs_attention"} for job in pending)
+            running = sum(job.status == "running" for job in pending)
+            queued = sum(job.status == "queued" for job in pending)
             if failed:
                 self.queue_hint.set(f"{failed} tarefa(s) exigem atenção")
+            elif running:
+                self.queue_hint.set(f"Processando {running} · {queued} aguardando")
             else:
-                self.queue_hint.set(f"{len(pending)} tarefa(s) aguardando processamento")
+                self.queue_hint.set(f"{queued} tarefa(s) aguardando processamento")
             self.retry_queue_button.configure(state=tk.NORMAL)
         self._render_library_list()
 
@@ -2909,10 +2987,9 @@ class RecorderApp(ctk.CTk):
             messagebox.showinfo("Fila", "Não há áudio disponível para retomar. Verifique a pasta da gravação na biblioteca.")
             self._refresh_library()
             return
-        known_ids = {job.id for job in self._pending_jobs}
-        self._pending_jobs.extend(job for job in resumable if job.id not in known_ids)
         self._run_next_pending_job()
         self._refresh_library()
+        self._refresh_processing_page()
 
     def _render_library_list(self) -> None:
         if not hasattr(self, "library_listbox"):
@@ -2953,6 +3030,117 @@ class RecorderApp(ctk.CTk):
         )
         self.library_detail.set(f"{item.folder.name} · {summary_state}")
         self.last_file.set(str(item.mp3_path or item.folder))
+
+    def _process_selected_library_audio(self) -> None:
+        """Snapshot current processing choices and add the selected audio to the serial queue."""
+        item = self._selected_library_item()
+        if item is None or item.mp3_path is None:
+            messagebox.showinfo("Áudio indisponível", "Selecione um áudio salvo na Biblioteca para processar.")
+            return
+        self._queue_pipeline(
+            item.mp3_path,
+            _LANG_CODES.get(self.pipeline_language.get(), "pt"),
+            self.pipeline_model.get(),
+            self._selected_summary_provider_code(),
+            self._selected_summary_template_code(),
+            output_mode="both",
+            output_dir=item.folder,
+            additional_instructions=RecorderApp._meeting_instructions(self),
+        )
+        self._show_page("processing")
+
+    def _refresh_processing_page(self) -> None:
+        """Render persisted serial-queue state without relying on the active page."""
+        if not hasattr(self, "processing_job_list"):
+            return
+        for child in self.processing_job_list.winfo_children():
+            child.destroy()
+        jobs = [
+            job for job in self._job_store.list()
+            if job.status in {"queued", "running", "failed", "needs_attention", "cancelled"}
+        ]
+        active = next((job for job in jobs if job.status == "running"), None)
+        queued_count = sum(job.status == "queued" for job in jobs)
+        if active is not None:
+            self.processing_overview.set(
+                f"Processando 1 áudio por vez · agora: {active.audio_path.name} · {queued_count} aguardando",
+            )
+        elif queued_count:
+            self.processing_overview.set(f"{queued_count} áudio(s) aguardando processamento serial")
+        elif jobs:
+            self.processing_overview.set("Alguns processamentos exigem atenção ou foram cancelados.")
+        else:
+            self.processing_overview.set("Nenhum processamento na fila")
+            ctk.CTkLabel(
+                self.processing_job_list,
+                text="Quando você clicar em Processar áudio na Biblioteca, o acompanhamento aparecerá aqui.",
+                font=("Segoe UI", 10), text_color=_COLORS["muted"], anchor="w", justify=tk.LEFT, wraplength=470,
+            ).pack(fill=tk.X, padx=12, pady=12)
+            return
+
+        status_labels = {
+            "queued": "NA FILA", "running": "PROCESSANDO", "failed": "FALHOU",
+            "needs_attention": "ATENÇÃO", "cancelled": "CANCELADO",
+        }
+        status_colors = {
+            "queued": "#C9D3FF", "running": "#B7AAFF", "failed": _COLORS["danger"],
+            "needs_attention": _COLORS["warning"], "cancelled": _COLORS["muted"],
+        }
+        for job in jobs:
+            row = ctk.CTkFrame(self.processing_job_list, fg_color="transparent")
+            row.pack(fill=tk.X, padx=10, pady=(8, 0))
+            details = ctk.CTkFrame(row, fg_color="transparent")
+            details.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            ctk.CTkLabel(
+                details, text=job.audio_path.name, font=("Segoe UI", 10, "bold"),
+                text_color=_COLORS["text"], anchor="w",
+            ).pack(fill=tk.X)
+            detail = job.stage or "Aguardando"
+            if job.error:
+                detail = f"{detail} · {job.error[:80]}"
+            ctk.CTkLabel(
+                details, text=detail, font=("Segoe UI", 9), text_color=_COLORS["muted"],
+                anchor="w", justify=tk.LEFT, wraplength=340,
+            ).pack(fill=tk.X)
+            action_text = status_labels.get(job.status, job.status.upper())
+            if job.status == "running":
+                ctk.CTkButton(
+                    row, text="Cancelar", command=self._request_cancel_processing, width=76, height=28,
+                    corner_radius=7, fg_color="#3A2637", hover_color="#573248", text_color=_COLORS["danger"],
+                    font=("Segoe UI", 9, "bold"),
+                ).pack(side=tk.RIGHT)
+            elif job.status == "queued":
+                ctk.CTkButton(
+                    row, text="Remover", command=lambda job_id=job.id: self._cancel_queued_job(job_id), width=76, height=28,
+                    corner_radius=7, fg_color="#263550", hover_color="#34476B", text_color=_COLORS["text"],
+                    font=("Segoe UI", 9, "bold"),
+                ).pack(side=tk.RIGHT)
+            elif job.status in {"failed", "needs_attention", "cancelled"}:
+                ctk.CTkButton(
+                    row, text="Tentar de novo", command=lambda job_id=job.id: self._retry_job(job_id), width=92, height=28,
+                    corner_radius=7, fg_color="#244462", hover_color="#315A80", text_color=_COLORS["text"],
+                    font=("Segoe UI", 9, "bold"),
+                ).pack(side=tk.RIGHT)
+            ctk.CTkLabel(
+                row, text=action_text, font=("Segoe UI", 8, "bold"), text_color=status_colors.get(job.status, _COLORS["muted"]),
+                width=92, anchor="e",
+            ).pack(side=tk.RIGHT, padx=(0, 8))
+        ctk.CTkFrame(self.processing_job_list, height=8, fg_color="transparent").pack(fill=tk.X)
+
+    def _cancel_queued_job(self, job_id: str) -> None:
+        self._job_store.update(job_id, status="cancelled", stage="Cancelado", error="Removido da fila pelo usuário")
+        self._refresh_library()
+        self._refresh_processing_page()
+
+    def _retry_job(self, job_id: str) -> None:
+        job = next((item for item in self._job_store.list() if item.id == job_id), None)
+        if job is None or not job.audio_path.is_file():
+            messagebox.showerror("Áudio indisponível", "O arquivo de áudio desse processamento não foi encontrado.")
+            return
+        self._job_store.update(job_id, status="queued", stage="Na fila", error="")
+        self._refresh_library()
+        self._refresh_processing_page()
+        self._run_next_pending_job()
 
     def _open_selected_folder(self) -> None:
         item = self._selected_library_item()
@@ -3348,8 +3536,7 @@ class RecorderApp(ctk.CTk):
     def _tray_can_start_meeting(self) -> bool:
         recording = self._service is not None and self._service.state == RecordingState.RECORDING
         finalizing = self._stop_thread is not None and self._stop_thread.is_alive()
-        processing = self._pipeline_thread is not None and self._pipeline_thread.is_alive()
-        return not recording and not finalizing and not processing
+        return not recording and not finalizing
 
     def _tray_can_stop_meeting(self) -> bool:
         return self._service is not None and self._service.state == RecordingState.RECORDING
@@ -3416,13 +3603,6 @@ class RecorderApp(ctk.CTk):
         self.start_button.configure(state=tk.DISABLED)
         self.stop_button.configure(state=tk.NORMAL)
         self._refresh_compact_controls()
-        self.process_button.configure(state=tk.DISABLED)
-        self.retry_summary_button.configure(state=tk.DISABLED)
-        self.youtube_process_button.configure(state=tk.DISABLED)
-        self.library_summary_button.configure(state=tk.DISABLED)
-        self.provider_selector.configure(state=tk.DISABLED)
-        self._set_summary_template_state(tk.DISABLED)
-        self._set_navigation_state(tk.DISABLED)
         self._set_capture_preferences_state(tk.DISABLED)
         self._update_device_info()
 
@@ -3483,33 +3663,21 @@ class RecorderApp(ctk.CTk):
         self.recording_limit_hint.set("Sem parada automática")
         self._last_output = output_path
         self.last_file.set(str(output_path))
-        if not output_path.is_file():
+        try:
+            audio_size = output_path.stat().st_size
+        except OSError:
+            audio_size = 0
+        if not output_path.is_file() or audio_size <= 0:
             self._show_stop_error(
-                "A gravação foi finalizada, mas o arquivo de áudio não foi encontrado na pasta escolhida. "
+                "A gravação foi finalizada, mas o arquivo de áudio não foi encontrado ou está vazio na pasta escolhida. "
                 "Nenhum processamento será iniciado."
             )
             return
-        self.status.set("Áudio salvo com segurança. Preparando a próxima etapa…")
+        self.status.set("Áudio salvo com segurança. Processe-o quando quiser pela Biblioteca.")
         self._refresh_library()
-        output_mode = self.recording_output_mode.get()
-        if output_mode == "audio":
-            self.status.set("Áudio salvo com segurança. Nenhum processamento foi solicitado.")
-            self._restore_after_processing()
-            return
-        lang_label = self.pipeline_language.get()
-        lang_code = _LANG_CODES.get(lang_label, "pt")
-        model_size = self.pipeline_model.get()
-        provider = self._selected_summary_provider_code()
-        summary_template = self._selected_summary_template_code()
-        log(
-            f"GUI: áudio preservado antes do pipeline | file={output_path.name} "
-            f"mode={output_mode} lang={lang_code} model={model_size} provider={provider}"
-        )
-        self._queue_pipeline(
-            output_path, lang_code, model_size, provider, summary_template,
-            output_mode=output_mode,
-            additional_instructions=RecorderApp._meeting_instructions(self),
-        )
+        self.start_button.configure(state=tk.NORMAL)
+        self._set_capture_preferences_state(tk.NORMAL)
+        self._refresh_compact_controls()
 
     def _update_device_info(self) -> None:
         if self._service is None:
@@ -3536,13 +3704,11 @@ class RecorderApp(ctk.CTk):
             messagebox.showerror("Link inválido", "Use um link válido do youtube.com ou youtu.be.")
             return
         self.youtube_process_button.configure(state=tk.DISABLED)
-        self.process_button.configure(state=tk.DISABLED)
-        self.retry_summary_button.configure(state=tk.DISABLED)
         self.status.set("Baixando áudio do YouTube...")
         self.youtube_hint.set("Baixando e convertendo para MP3…")
         self.progressbar.pack(fill=tk.X, padx=20, pady=(4, 0))
         self.progressbar.start()
-        self._pipeline_thread = threading.Thread(
+        self._youtube_download_thread = threading.Thread(
             target=self._youtube_download_worker,
             args=(
                 url, self.youtube_mode.get(), self._selected_summary_template_code(),
@@ -3550,7 +3716,7 @@ class RecorderApp(ctk.CTk):
             ),
             daemon=True,
         )
-        self._pipeline_thread.start()
+        self._youtube_download_thread.start()
 
     def _youtube_download_worker(
         self, url: str, selected_mode: str, selected_template: str, additional_instructions: str,
@@ -3594,6 +3760,7 @@ class RecorderApp(ctk.CTk):
             output_dir=Path(self.output_dir.get()),
             additional_instructions=additional_instructions,
         )
+        self.youtube_process_button.configure(state=tk.NORMAL)
 
     def _on_youtube_download_error(self, message: str) -> None:
         self.progressbar.stop()
@@ -3714,23 +3881,20 @@ class RecorderApp(ctk.CTk):
             return
         job = self._job_store.enqueue(
             mp3_path, output_dir or mp3_path.parent, language, model_size, provider, summary_template, output_mode,
-            transcription_provider, additional_instructions.strip(),
+            transcription_provider, additional_instructions.strip(), self.diarize_speakers.get(),
         )
         if additional_instructions.strip():
             self._clear_meeting_instructions()
-        self._start_queued_job(job)
+        self.status.set(f"Processamento adicionado à fila: {mp3_path.name}")
+        self._refresh_library()
+        self._refresh_processing_page()
+        self._run_next_pending_job()
 
     def _start_queued_job(self, job: ProcessingJob) -> None:
-        self.start_button.configure(state=tk.DISABLED)
-        self.process_button.configure(state=tk.DISABLED)
-        self.retry_summary_button.configure(state=tk.DISABLED)
-        self.provider_selector.configure(state=tk.DISABLED)
-        self._set_summary_template_state(tk.DISABLED)
-        self._set_navigation_state(tk.DISABLED)
-        self._set_capture_preferences_state(tk.DISABLED)
-        step_total = "1/4" if self.diarize_speakers.get() else "1/3"
+        step_total = "1/4" if job.separate_speakers else "1/3"
         self.status.set(f"{step_total} · Preparando processamento")
         self.last_file.set(job.mp3_path)
+        self._active_job_id = job.id
         self._start_pipeline(
             job.audio_path,
             language=job.language,
@@ -3740,6 +3904,7 @@ class RecorderApp(ctk.CTk):
             output_mode=job.output_mode,
             transcription_provider=job.transcription_provider,
             additional_instructions=job.additional_instructions,
+            separate_speakers=job.separate_speakers,
             output_dir=Path(job.output_dir),
             job_id=job.id,
         )
@@ -3749,16 +3914,17 @@ class RecorderApp(ctk.CTk):
         jobs = self._job_store.recoverable()
         if not jobs:
             return
-        self._pending_jobs.extend(jobs)
         self.status.set(f"Retomando {len(jobs)} tarefa(s) pendente(s)...")
+        self._refresh_processing_page()
         self._run_next_pending_job()
 
     def _run_next_pending_job(self) -> None:
         if self._pipeline_thread is not None and self._pipeline_thread.is_alive():
             return
-        if not self._pending_jobs:
+        job = next((item for item in self._job_store.list() if item.status == "queued"), None)
+        if job is None:
             return
-        self._start_queued_job(self._pending_jobs.pop(0))
+        self._start_queued_job(job)
 
     def _retry_summary_from_transcription(self) -> None:
         """Choose a saved transcription and regenerate only its summary."""
@@ -3891,19 +4057,18 @@ class RecorderApp(ctk.CTk):
         additional_instructions: str | None = None,
     ) -> None:
         """Regenerate a saved summary, preserving the audio and transcription."""
+        if self._pipeline_thread is not None and self._pipeline_thread.is_alive():
+            messagebox.showinfo(
+                "Processamento em andamento",
+                "Há um processamento ativo. Você pode continuar usando o aplicativo; tente gerar este resumo quando a fila terminar.",
+            )
+            return
         provider = provider or self._selected_summary_provider_code()
         summary_template = summary_template or self._selected_summary_template_code()
         instructions_were_explicitly_chosen = additional_instructions is not None
         if additional_instructions is None:
             additional_instructions = RecorderApp._meeting_instructions(self)
-        self.start_button.configure(state=tk.DISABLED)
-        self.process_button.configure(state=tk.DISABLED)
         self.retry_summary_button.configure(state=tk.DISABLED)
-        self.youtube_process_button.configure(state=tk.DISABLED)
-        self.library_summary_button.configure(state=tk.DISABLED)
-        self.provider_selector.configure(state=tk.DISABLED)
-        self._set_summary_template_state(tk.DISABLED)
-        self._set_navigation_state(tk.DISABLED)
         self.status.set("Gerando nova versão do resumo…")
         self.last_file.set(str(transcript_path.parent))
         self._show_summary_retry_progress()
@@ -3942,12 +4107,15 @@ class RecorderApp(ctk.CTk):
         self.status.set("Resumo atualizado com sucesso")
         self.last_file.set(str(summary_path.parent))
         self._restore_after_processing()
+        self.youtube_process_button.configure(state=tk.NORMAL)
+        self.retry_summary_button.configure(state=tk.NORMAL)
         self._refresh_library()
         self._tray.notify("Resumo concluído", f"Nova versão salva em {summary_path.parent.name}.")
 
     def _on_summary_retry_error(self, message: str) -> None:
         self.status.set("Não foi possível gerar o resumo")
         self._restore_after_processing()
+        self.retry_summary_button.configure(state=tk.NORMAL)
         self._tray.notify("Resumo não concluído", "Verifique o provider e tente gerar novamente.")
         messagebox.showerror(
             "Nova tentativa não concluída",
@@ -3955,17 +4123,9 @@ class RecorderApp(ctk.CTk):
         )
 
     def _restore_after_processing(self) -> None:
-        """Restore controls after a pipeline or summary-only operation."""
+        """Hide global progress feedback without blocking unrelated app controls."""
         self._hide_cancellable_progress()
-        self.start_button.configure(state=tk.NORMAL)
-        self.process_button.configure(state=tk.NORMAL)
-        self.retry_summary_button.configure(state=tk.NORMAL)
-        self.youtube_process_button.configure(state=tk.NORMAL)
-        self.library_summary_button.configure(state=tk.NORMAL)
-        self.provider_selector.configure(state="readonly")
-        self._set_summary_template_state(tk.NORMAL)
-        self._set_navigation_state(tk.NORMAL)
-        self._set_capture_preferences_state(tk.NORMAL)
+        self._refresh_compact_controls()
 
     def _show_cancellable_progress(self) -> None:
         """Expose one deliberate escape route while the isolated worker starts."""
@@ -4061,8 +4221,10 @@ class RecorderApp(ctk.CTk):
         self.status.set("Processamento cancelado — áudio preservado")
         if job_id is not None:
             self._job_store.update(job_id, status="cancelled", stage="Cancelado", error="Interrompido pelo usuário")
+        self._active_job_id = None
         self._restore_after_processing()
         self._refresh_library()
+        self._refresh_processing_page()
         # The worker thread may still be returning while this callback runs.
         # Schedule a second queue check so later jobs are not stranded.
         self.after(80, self._run_next_pending_job)
@@ -4077,15 +4239,20 @@ class RecorderApp(ctk.CTk):
         output_mode: str = "both",
         transcription_provider: str = "local",
         additional_instructions: str = "",
+        separate_speakers: bool | None = None,
         output_dir: Path | None = None,
         job_id: str | None = None,
     ) -> None:
         from record_transcript_resume.log import log, log_exception
         log(f"GUI: _start_pipeline | file={mp3_path.name} lang={language} model={model_size} provider={provider}")
         try:
+            use_speaker_separation = self.diarize_speakers.get() if separate_speakers is None else separate_speakers
             if job_id is not None:
-                self._job_store.update(job_id, status="running", stage="1/3 · Preparando")
-            self._pipeline_has_speaker_separation = self.diarize_speakers.get()
+                self._job_store.update(
+                    job_id, status="running",
+                    stage="1/4 · Preparando" if use_speaker_separation else "1/3 · Preparando",
+                )
+            self._pipeline_has_speaker_separation = use_speaker_separation
             self._show_cancellable_progress()
             log("GUI: progressbar iniciada")
 
@@ -4096,10 +4263,11 @@ class RecorderApp(ctk.CTk):
                 if job_id is not None:
                     self._job_store.update(job_id, status="running", stage=stage, error="")
                 self.after(0, self._set_processing_status, stage)
+                self.after(0, self._refresh_processing_page)
 
             self._pipeline_thread = threading.Thread(
                 target=self._pipeline_worker,
-                args=(mp3_path, output_dir or mp3_path.parent, language or "pt", model_size, provider, summary_template, output_mode, transcription_provider, additional_instructions, self.diarize_speakers.get(), self.huggingface_token.get(), job_id, on_status),
+                args=(mp3_path, output_dir or mp3_path.parent, language or "pt", model_size, provider, summary_template, output_mode, transcription_provider, additional_instructions, use_speaker_separation, self.huggingface_token.get(), job_id, on_status),
                 daemon=True,
             )
             self._pipeline_thread.start()
@@ -4258,9 +4426,11 @@ class RecorderApp(ctk.CTk):
         self.last_file.set(str(result.folder))
         if job_id is not None:
             self._job_store.update(job_id, status="completed", stage="3/3 · Concluído", error="")
+        self._active_job_id = None
         self._restore_after_processing()
         self._refresh_library()
-        self._run_next_pending_job()
+        self._refresh_processing_page()
+        self.after(120, self._run_next_pending_job)
 
     def _on_pipeline_error(self, message: str, job_id: str | None = None) -> None:
         from record_transcript_resume.log import log
@@ -4270,15 +4440,20 @@ class RecorderApp(ctk.CTk):
         self.status.set("Processamento falhou — áudio preservado")
         if job_id is not None:
             self._job_store.update(job_id, status="failed", stage="Falhou — tente novamente", error=message)
+        self._active_job_id = None
         self._restore_after_processing()
         self._refresh_library()
-        self._run_next_pending_job()
+        self._refresh_processing_page()
+        self.after(120, self._run_next_pending_job)
         saved_audio = self._last_output
         if job_id is not None:
             failed_job = next((job for job in self._job_store.list() if job.id == job_id), None)
             if failed_job is not None:
                 saved_audio = failed_job.audio_path
         location = f"\n\nSeu áudio foi preservado em:\n{saved_audio}" if saved_audio else ""
+        if job_id is not None:
+            self._tray.notify("Processamento exige atenção", f"{Path(saved_audio).name if saved_audio else 'Um áudio'} falhou e ficou disponível para tentar novamente.")
+            return
         messagebox.showerror("Processamento não concluído", f"{message}{location}\n\n{_log_hint()}")
 
     # ── Equalizador ───────────────────────────────────────────────────────────
