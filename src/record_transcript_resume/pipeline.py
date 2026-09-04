@@ -21,6 +21,7 @@ class PipelineResult:
     mp3_path: Path
     transcript_path: Path | None
     summary_path: Path | None
+    warnings: tuple[str, ...] = ()
 
 
 def run(
@@ -53,12 +54,22 @@ def run(
     )
     from record_transcript_resume.log import log
     log(f"Pipeline transcription finished | elapsed={_elapsed(transcription_started)} model={model_size}")
+    warnings: list[str] = []
     if diarize_speakers:
         _notify("Identifying speakers...")
         diarization_started = time.monotonic()
         from record_transcript_resume.diarization import diarize
-        segments = assign_speakers(segments, diarize(mp3_path, huggingface_token))
-        log(f"Pipeline speaker separation finished | elapsed={_elapsed(diarization_started)}")
+        try:
+            segments = assign_speakers(segments, diarize(mp3_path, huggingface_token))
+            log(f"Pipeline speaker separation finished | elapsed={_elapsed(diarization_started)}")
+        except Exception as exc:
+            warning = "Não foi possível separar os falantes; a transcrição continuou sem identificá-los."
+            warnings.append(warning)
+            _notify(warning)
+            log(
+                "Pipeline speaker separation skipped after failure | "
+                f"elapsed={_elapsed(diarization_started)} error={type(exc).__name__}: {exc}"
+            )
     transcript_text = segments_to_markdown(segments)
 
     synthesis = SynthesisResult(folder_name="", summary_md="")
@@ -104,6 +115,7 @@ def run(
         mp3_path=new_mp3,
         transcript_path=transcript_path,
         summary_path=summary_path,
+        warnings=tuple(warnings),
     )
 
 

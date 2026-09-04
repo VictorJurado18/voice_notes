@@ -17,6 +17,14 @@ class _Value:
         return self.value
 
 
+class _BoolValue:
+    def __init__(self, value: bool) -> None:
+        self.value = value
+
+    def get(self) -> bool:
+        return self.value
+
+
 def test_copy_open_document_copies_all_editor_content() -> None:
     app = SimpleNamespace(
         _library_editing=True,
@@ -56,7 +64,7 @@ def test_exported_pdf_is_opened_after_success(monkeypatch, tmp_path: Path) -> No
     app.status.set.assert_called_once_with("PDF exportado e aberto: resumo.pdf")
 
 
-def test_media_import_accepts_mp4_and_queues_it(monkeypatch, tmp_path: Path) -> None:
+def test_media_import_uses_the_visible_file_configuration(monkeypatch, tmp_path: Path) -> None:
     video = tmp_path / "reuniao.mp4"
     chooser: dict[str, object] = {}
 
@@ -66,12 +74,15 @@ def test_media_import_accepts_mp4_and_queues_it(monkeypatch, tmp_path: Path) -> 
 
     app = SimpleNamespace(
         output_dir=_Value(str(tmp_path)),
-        pipeline_language=_Value("Portuguese (BR)"),
-        pipeline_model=_Value("small"),
-        summary_provider=_Value("Codex"),
-        summary_template=_Value("Reunião"),
-        _selected_summary_provider_code=lambda: "codex",
-        _selected_summary_template_code=lambda: "meeting",
+        file_pipeline_language=_Value("English"),
+        file_pipeline_model=_Value("medium"),
+        file_summary_provider=_Value("API · Equipe A"),
+        file_processing_profile=_Value("Entrevista"),
+        file_transcription_source=_Value("Whisper local"),
+        file_diarize_speakers=_BoolValue(False),
+        _summary_provider_code_for_label=lambda label: "api:provider-a" if label == "API · Equipe A" else "codex",
+        _summary_template_code_for_choice=lambda profile, template: "interview" if profile == "Entrevista" else "meeting",
+        _transcription_provider_code_for_label=lambda _label: "local",
         _queue_pipeline=Mock(),
     )
     monkeypatch.setattr(gui.filedialog, "askopenfilename", choose_file)
@@ -80,7 +91,10 @@ def test_media_import_accepts_mp4_and_queues_it(monkeypatch, tmp_path: Path) -> 
 
     assert chooser["title"] == "Importar áudio ou vídeo para transcrever"
     assert "*.mp4" in " ".join(pattern for _label, pattern in chooser["filetypes"])
-    app._queue_pipeline.assert_called_once_with(video, "pt", "small", "codex", "meeting")
+    app._queue_pipeline.assert_called_once_with(
+        video, "en", "medium", "api:provider-a", "interview",
+        transcription_provider="local", separate_speakers=False,
+    )
 
 
 def test_saved_api_provider_is_an_individually_selectable_summary_provider() -> None:

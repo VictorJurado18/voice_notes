@@ -39,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
             "mp3": str(result.mp3_path),
             "transcript": str(result.transcript_path) if result.transcript_path else "",
             "summary": str(result.summary_path) if result.summary_path else "",
+            "warnings": list(result.warnings),
         }), flush=True)
         return 0
     except Exception as exc:
