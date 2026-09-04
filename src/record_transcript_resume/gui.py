@@ -333,6 +333,13 @@ class RecorderApp(ctk.CTk):
         self.model_description = tk.StringVar(value=_WHISPER_MODEL_DESCRIPTIONS["small"])
         self.transcription_source = tk.StringVar(value="Whisper local")
         self.transcription_source_hint = tk.StringVar(value="Processa o áudio neste computador com o modelo Whisper selecionado.")
+        # Importing an existing file is an independent workflow. Its choices
+        # stay visible in the Arquivo page and are snapshotted into the job,
+        # instead of silently inheriting recording settings.
+        self.file_pipeline_language = tk.StringVar(value=self.pipeline_language.get())
+        self.file_pipeline_model = tk.StringVar(value=self.pipeline_model.get())
+        self.file_transcription_source = tk.StringVar(value=self.transcription_source.get())
+        self.file_diarize_speakers = tk.BooleanVar(value=False)
         self.youtube_url = tk.StringVar(value="")
         self.youtube_mode = tk.StringVar(value="Transcrição e resumo")
         self.youtube_hint = tk.StringVar(value="Use somente conteúdo próprio ou autorizado.")
@@ -359,6 +366,8 @@ class RecorderApp(ctk.CTk):
         self._api_advanced_open = False
         self.summary_template = tk.StringVar(value="Reunião")
         self.processing_profile = tk.StringVar(value="Resumo padrão")
+        self.file_summary_provider = tk.StringVar(value=self.summary_provider.get())
+        self.file_processing_profile = tk.StringVar(value=self.processing_profile.get())
         from record_transcript_resume.summary_profiles import load_profiles
         self._summary_profiles = load_profiles()
         saved_huggingface_token = _saved_huggingface_token()
@@ -1000,6 +1009,76 @@ class RecorderApp(ctk.CTk):
             self._file_panel, text="Selecione um áudio ou vídeo já baixado para transcrever e resumir.",
             font=("Segoe UI", 9), text_color=_COLORS["muted"], anchor="w",
         ).pack(fill=tk.X, padx=16, pady=(0, 10))
+        file_settings = ctk.CTkFrame(self._file_panel, fg_color="#0D1525", corner_radius=10)
+        file_settings.pack(fill=tk.X, padx=14, pady=(0, 10))
+        ctk.CTkLabel(
+            file_settings, text="CONFIGURAÇÃO DESTE ARQUIVO", font=("Segoe UI", 9, "bold"),
+            text_color="#C9D3FF", anchor="w",
+        ).pack(fill=tk.X, padx=12, pady=(10, 2))
+        ctk.CTkLabel(
+            file_settings, text="Estas escolhas valem somente para o próximo áudio ou vídeo selecionado.",
+            font=("Segoe UI", 9), text_color=_COLORS["muted"], anchor="w",
+        ).pack(fill=tk.X, padx=12, pady=(0, 8))
+
+        def file_setting_label(text: str) -> None:
+            ctk.CTkLabel(
+                file_settings, text=text, font=("Segoe UI", 9, "bold"),
+                text_color=_COLORS["muted"], anchor="w",
+            ).pack(fill=tk.X, padx=12, pady=(0, 3))
+
+        file_setting_label("FONTE DA TRANSCRIÇÃO")
+        self.file_transcription_source_selector = ctk.CTkComboBox(
+            file_settings, variable=self.file_transcription_source,
+            values=self._transcription_source_options(), state="readonly", height=32, corner_radius=8,
+            fg_color="#080C16", border_color="#2A3A58", button_color="#263550",
+            button_hover_color="#34476B", text_color=_COLORS["text"],
+            dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
+        )
+        self.file_transcription_source_selector.pack(fill=tk.X, padx=12, pady=(0, 8))
+        file_setting_label("IDIOMA E MODELO")
+        file_transcription_row = ctk.CTkFrame(file_settings, fg_color="transparent")
+        file_transcription_row.pack(fill=tk.X, padx=12, pady=(0, 8))
+        self.file_language_selector = ctk.CTkComboBox(
+            file_transcription_row, variable=self.file_pipeline_language, values=_LANG_LABELS,
+            state="readonly", height=32, corner_radius=8, width=200, fg_color="#080C16",
+            border_color="#2A3A58", button_color="#263550", button_hover_color="#34476B",
+            text_color=_COLORS["text"], dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"],
+            font=("Segoe UI", 10),
+        )
+        self.file_language_selector.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.file_model_selector = ctk.CTkComboBox(
+            file_transcription_row, variable=self.file_pipeline_model, values=self._available_models,
+            state="readonly", height=32, corner_radius=8, width=132, fg_color="#080C16",
+            border_color="#2A3A58", button_color="#263550", button_hover_color="#34476B",
+            text_color=_COLORS["text"], dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"],
+            font=("Segoe UI", 10),
+        )
+        self.file_model_selector.pack(side=tk.LEFT, padx=(8, 0))
+        file_setting_label("PROVIDER DO RESUMO")
+        self.file_summary_provider_selector = ctk.CTkComboBox(
+            file_settings, variable=self.file_summary_provider, values=self._summary_provider_options(),
+            state="readonly", height=32, corner_radius=8, fg_color="#080C16", border_color="#2A3A58",
+            button_color="#263550", button_hover_color="#34476B", text_color=_COLORS["text"],
+            dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
+        )
+        self.file_summary_provider_selector.pack(fill=tk.X, padx=12, pady=(0, 7))
+        file_setting_label("PERFIL DO RESUMO")
+        self.file_profile_selector = ctk.CTkComboBox(
+            file_settings, variable=self.file_processing_profile, values=self._summary_profile_options(),
+            state="readonly", height=32, corner_radius=8, fg_color="#080C16", border_color="#2A3A58",
+            button_color="#263550", button_hover_color="#34476B", text_color=_COLORS["text"],
+            dropdown_fg_color="#162136", dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
+        )
+        self.file_profile_selector.pack(fill=tk.X, padx=12, pady=(0, 8))
+        ctk.CTkCheckBox(
+            file_settings, text="Separar falantes (Pessoa 1, Pessoa 2)", variable=self.file_diarize_speakers,
+            fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"], text_color=_COLORS["text"],
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor=tk.W, padx=12)
+        ctk.CTkLabel(
+            file_settings, text="Deixe desligado quando houver apenas uma pessoa. Se falhar, a transcrição continuará sem os nomes.",
+            font=("Segoe UI", 9), text_color=_COLORS["muted"], anchor="w", wraplength=455,
+        ).pack(fill=tk.X, padx=12, pady=(3, 10))
         self.process_button = ctk.CTkButton(
             self._file_panel, text="Escolher áudio ou vídeo", command=self._process_existing_media,
             height=42, corner_radius=10, fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"],
@@ -1424,6 +1503,9 @@ class RecorderApp(ctk.CTk):
             _SUMMARY_PROVIDER_CODES.get(self.summary_provider.get(), "codex"),
         )
 
+    def _summary_provider_code_for_label(self, label: str) -> str:
+        return self._api_provider_labels.get(label, _SUMMARY_PROVIDER_CODES.get(label, "codex"))
+
     def _label_for_summary_provider_code(self, provider_code: str) -> str | None:
         """Resolve a persisted provider code to the current visible label."""
         native_label = next(
@@ -1467,6 +1549,11 @@ class RecorderApp(ctk.CTk):
             return "local"
         return self._api_provider_labels.get(self.transcription_source.get(), "local")
 
+    def _transcription_provider_code_for_label(self, label: str) -> str:
+        if label == "Whisper local":
+            return "local"
+        return self._api_provider_labels.get(label, "local")
+
     def _api_provider_for_id(self, provider_id: str) -> object | None:
         return next((config for config in self._api_provider_configs if config.id == provider_id), None)
 
@@ -1478,9 +1565,17 @@ class RecorderApp(ctk.CTk):
         values = self._summary_provider_options()
         if hasattr(self, "provider_selector"):
             self.provider_selector.configure(values=values)
+        if hasattr(self, "file_summary_provider_selector"):
+            self.file_summary_provider_selector.configure(values=values)
+            if self.file_summary_provider.get() not in values:
+                self.file_summary_provider.set(self.summary_provider.get())
         transcription_values = self._transcription_source_options()
         if hasattr(self, "transcription_source_selector"):
             self.transcription_source_selector.configure(values=transcription_values)
+        if hasattr(self, "file_transcription_source_selector"):
+            self.file_transcription_source_selector.configure(values=transcription_values)
+            if self.file_transcription_source.get() not in transcription_values:
+                self.file_transcription_source.set("Whisper local")
         desired_code = self._preferred_summary_provider_code or current_code
         self._restore_summary_provider_choice(desired_code)
         if self.transcription_source.get() not in transcription_values:
@@ -1580,12 +1675,14 @@ class RecorderApp(ctk.CTk):
 
         self._summary_profiles = load_profiles()
         values = self._summary_profile_options()
-        for selector_name in ("profile_selector", "youtube_profile_selector"):
+        for selector_name in ("profile_selector", "youtube_profile_selector", "file_profile_selector"):
             selector = getattr(self, selector_name, None)
             if selector is not None:
                 selector.configure(values=values)
         if self.processing_profile.get() not in values:
             self.processing_profile.set("Resumo padrão")
+        if hasattr(self, "file_processing_profile") and self.file_processing_profile.get() not in values:
+            self.file_processing_profile.set("Resumo padrão")
         if hasattr(self, "summary_profile_list"):
             self._render_summary_profile_list()
 
@@ -3784,17 +3881,17 @@ class RecorderApp(ctk.CTk):
         if not path:
             return
         mp3_path = Path(path)
-        label = self.pipeline_language.get()
+        label = self.file_pipeline_language.get()
         lang_code = _LANG_CODES.get(label, "pt")
-        model_size = self.pipeline_model.get()
-        provider = self._selected_summary_provider_code()
-        summary_template = self._selected_summary_template_code()
-        additional_instructions = RecorderApp._meeting_instructions(self)
-        queue_args = (mp3_path, lang_code, model_size, provider, summary_template)
-        if additional_instructions:
-            self._queue_pipeline(*queue_args, additional_instructions=additional_instructions)
-        else:
-            self._queue_pipeline(*queue_args)
+        model_size = self.file_pipeline_model.get()
+        provider = self._summary_provider_code_for_label(self.file_summary_provider.get())
+        summary_template = self._summary_template_code_for_choice(self.file_processing_profile.get(), "Reunião")
+        transcription_provider = self._transcription_provider_code_for_label(self.file_transcription_source.get())
+        self._queue_pipeline(
+            mp3_path, lang_code, model_size, provider, summary_template,
+            transcription_provider=transcription_provider,
+            separate_speakers=self.file_diarize_speakers.get(),
+        )
 
     def _toggle_text_import(self) -> None:
         if self._text_import_open:
@@ -3867,12 +3964,15 @@ class RecorderApp(ctk.CTk):
         output_mode: str = "both",
         output_dir: Path | None = None,
         additional_instructions: str = "",
+        transcription_provider: str | None = None,
+        separate_speakers: bool | None = None,
     ) -> None:
         """Persist the job before doing any expensive work."""
         if not mp3_path.is_file():
             messagebox.showerror("Áudio não encontrado", f"Não foi possível encontrar:\n{mp3_path}")
             return
-        transcription_provider = self._selected_transcription_provider_code()
+        transcription_provider = transcription_provider or self._selected_transcription_provider_code()
+        separate_speakers = self.diarize_speakers.get() if separate_speakers is None else separate_speakers
         if transcription_provider.startswith("api:") and not self._api_provider_has_token(transcription_provider.removeprefix("api:")):
             messagebox.showerror(
                 "Token ausente",
@@ -3881,7 +3981,7 @@ class RecorderApp(ctk.CTk):
             return
         job = self._job_store.enqueue(
             mp3_path, output_dir or mp3_path.parent, language, model_size, provider, summary_template, output_mode,
-            transcription_provider, additional_instructions.strip(), self.diarize_speakers.get(),
+            transcription_provider, additional_instructions.strip(), separate_speakers,
         )
         if additional_instructions.strip():
             self._clear_meeting_instructions()
@@ -4400,6 +4500,7 @@ class RecorderApp(ctk.CTk):
                 mp3_path=Path(result_event["mp3"]),
                 transcript_path=Path(result_event["transcript"]) if result_event.get("transcript") else None,
                 summary_path=Path(result_event["summary"]) if result_event.get("summary") else None,
+                warnings=tuple(str(item) for item in result_event.get("warnings", []) if str(item).strip()),
             )
             log(f"GUI: pipeline concluido -> {result.folder.name}")
             self.after(0, self._on_pipeline_done, result, job_id)
@@ -4422,10 +4523,15 @@ class RecorderApp(ctk.CTk):
         self.progressbar.stop()
         self.progressbar.pack_forget()
         completed_stage = "4/4" if self._pipeline_has_speaker_separation else "3/3"
-        self.status.set(f"{completed_stage} · Concluído: {result.folder.name}")
+        if result.warnings:
+            self.status.set(f"Concluído sem separar falantes: {result.folder.name}")
+            self._tray.notify("Transcrição concluída com aviso", result.warnings[0])
+        else:
+            self.status.set(f"{completed_stage} · Concluído: {result.folder.name}")
         self.last_file.set(str(result.folder))
         if job_id is not None:
-            self._job_store.update(job_id, status="completed", stage="3/3 · Concluído", error="")
+            stage = "Concluído com aviso" if result.warnings else "3/3 · Concluído"
+            self._job_store.update(job_id, status="completed", stage=stage, error="")
         self._active_job_id = None
         self._restore_after_processing()
         self._refresh_library()

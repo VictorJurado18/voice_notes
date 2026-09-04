@@ -139,6 +139,21 @@ class PipelineTests(unittest.TestCase):
 
         self.assertIn("**Pessoa 1**", generate.call_args.args[0])
 
+    def test_diarization_failure_keeps_transcription_and_summary(self) -> None:
+        statuses: list[str] = []
+        with patch("record_transcript_resume.pipeline.transcribe", return_value=_fake_segments()), \
+             patch("record_transcript_resume.diarization.diarize", side_effect=TranscriptionError("modelo indisponível")), \
+             patch("record_transcript_resume.pipeline.generate", return_value=_fake_synthesis()):
+            result = run(
+                self.mp3, Path(self.tmp), diarize_speakers=True, huggingface_token="hf_test",
+                on_status=statuses.append,
+            )
+
+        self.assertTrue(result.transcript_path.exists())
+        self.assertTrue(result.summary_path.exists())
+        self.assertEqual(result.warnings, ("Não foi possível separar os falantes; a transcrição continuou sem identificá-los.",))
+        self.assertIn(result.warnings[0], statuses)
+
     def test_retry_summary_reuses_transcription_without_touching_mp3(self) -> None:
         folder = Path(self.tmp) / "saved-meeting"
         folder.mkdir()
