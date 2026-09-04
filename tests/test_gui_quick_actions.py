@@ -112,3 +112,20 @@ def test_saved_api_provider_is_an_individually_selectable_summary_provider() -> 
     assert "API · Equipe A" in values
     assert "API · Equipe B" in values
     assert RecorderApp._selected_summary_provider_code(app) == "api:provider-b"
+
+
+def test_processing_feedback_is_inserted_before_the_active_page_content() -> None:
+    anchor = object()
+    progressbar = Mock()
+    actions = Mock()
+    app = SimpleNamespace(
+        _current_page="file",
+        _page_layouts={"file": [(anchor, {})]},
+        progressbar=progressbar,
+        _processing_actions=actions,
+    )
+
+    RecorderApp._pack_global_processing_feedback(app)
+
+    progressbar.pack.assert_called_once_with(fill=gui.tk.X, padx=20, pady=(4, 0), before=anchor)
+    actions.pack.assert_called_once_with(fill=gui.tk.X, padx=20, pady=(7, 0), before=anchor)

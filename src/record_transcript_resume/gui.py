@@ -4227,6 +4227,24 @@ class RecorderApp(ctk.CTk):
         self._hide_cancellable_progress()
         self._refresh_compact_controls()
 
+    def _pack_global_processing_feedback(self) -> None:
+        """Keep global progress immediately below the tabs on every page.
+
+        ``pack`` normally appends a widget after existing page content. That
+        made the bar start at the bottom until a navigation redraw happened.
+        Inserting both feedback rows before the first widget of the active
+        page makes their position deterministic from the first render.
+        """
+        layouts = self._page_layouts.get(getattr(self, "_current_page", ""), [])
+        anchor = layouts[0][0] if layouts else None
+        options: dict[str, object] = {"fill": tk.X, "padx": 20}
+        if anchor is not None:
+            self.progressbar.pack(**options, pady=(4, 0), before=anchor)
+            self._processing_actions.pack(**options, pady=(7, 0), before=anchor)
+        else:
+            self.progressbar.pack(**options, pady=(4, 0))
+            self._processing_actions.pack(**options, pady=(7, 0))
+
     def _show_cancellable_progress(self) -> None:
         """Expose one deliberate escape route while the isolated worker starts."""
         self._processing_cancel_requested = False
@@ -4234,9 +4252,8 @@ class RecorderApp(ctk.CTk):
         self._processing_started_at = time.monotonic()
         self._processing_activity = "Processando áudio"
         self._processing_feedback.set("Processando em segundo plano · o áudio salvo será preservado.")
-        self.progressbar.pack(fill=tk.X, padx=20, pady=(4, 0))
+        self._pack_global_processing_feedback()
         self.progressbar.start()
-        self._processing_actions.pack(fill=tk.X, padx=20, pady=(7, 0))
         self.cancel_processing_button.pack(side=tk.RIGHT)
         self.cancel_processing_button.configure(text="Preparando processamento…", state=tk.DISABLED)
 
@@ -4245,9 +4262,8 @@ class RecorderApp(ctk.CTk):
         self._processing_started_at = time.monotonic()
         self._processing_activity = "Gerando resumo"
         self._processing_feedback.set("Gerando nova versão em segundo plano · o resumo atual será preservado até concluir.")
-        self.progressbar.pack(fill=tk.X, padx=20, pady=(4, 0))
+        self._pack_global_processing_feedback()
         self.progressbar.start()
-        self._processing_actions.pack(fill=tk.X, padx=20, pady=(7, 0))
         self.cancel_processing_button.pack_forget()
         self.library_summary_progress_text.set("Gerando nova versão do resumo · 00:00")
         self._library_summary_progress.pack(
