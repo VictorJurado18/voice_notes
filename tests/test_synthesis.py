@@ -160,6 +160,27 @@ class SynthesisTests(unittest.TestCase):
             with self.assertRaises(SynthesisError):
                 generate("Transcription.", "2026-05-21", provider="codex")
 
+    def test_codex_retries_with_default_model_when_configured_model_is_unsupported(self) -> None:
+        failed = _make_completed_process("", returncode=1)
+        failed.stderr = (
+            "Codex starting...\n"
+            "ERROR: The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account."
+        )
+        success = _make_completed_process(json.dumps({"folder_name": "meeting", "summary_md": "# Resumo"}))
+        with patch("record_transcript_resume.synthesis.subprocess.run", side_effect=[failed, success]) as run:
+            result = generate("Transcription.", "2026-05-21", provider="codex")
+
+        self.assertEqual(result.folder_name, "meeting")
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("--ignore-user-config", run.call_args.args[0])
+
+    def test_cli_error_shows_final_error_instead_of_startup_output(self) -> None:
+        failed = _make_completed_process("", returncode=1)
+        failed.stderr = "startup line\n" * 100 + "ERROR: Authentication expired"
+        with patch("record_transcript_resume.synthesis.subprocess.run", return_value=failed):
+            with self.assertRaisesRegex(SynthesisError, "Authentication expired"):
+                generate("Transcription.", "2026-05-21", provider="claude")
+
     def test_generate_delegates_to_saved_api_provider(self) -> None:
         payload = json.dumps({"folder_name": "api-summary", "summary_md": "# Resumo"})
         with patch("record_transcript_resume.api_provider.generate", return_value=payload) as api:

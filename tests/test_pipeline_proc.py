@@ -88,6 +88,7 @@ class TestPipelineProcProtocol(unittest.TestCase):
             fake_result.mp3_path = mp3
             fake_result.transcript_path = Path(tmp) / "transcription.md"
             fake_result.summary_path = Path(tmp) / "summary.md"
+            fake_result.summary_failed = False
 
             # Patch pipeline.run inside the subprocess's import by injecting
             # a wrapper script that overrides the function before calling main().
@@ -167,6 +168,28 @@ class TestPipelineProcProtocol(unittest.TestCase):
         event = json.loads(output)
         self.assertEqual(event["type"], "error")
         self.assertIn("falha simulada", event["msg"])
+
+    def test_worker_forwards_existing_folder_choice(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+
+        import record_transcript_resume._pipeline_proc as proc_mod
+        from record_transcript_resume.pipeline import PipelineResult
+
+        with patch("record_transcript_resume.pipeline.run") as run_mock:
+            run_mock.return_value = PipelineResult(
+                folder=Path("recording"), mp3_path=Path("recording/audio.mp3"),
+                transcript_path=None, summary_path=None,
+            )
+            with redirect_stdout(io.StringIO()):
+                result = proc_mod.main([
+                    "recording/audio.mp3", "recording", "pt", "small", "codex", "meeting",
+                    "0", "both", "local", "", "0", "1",
+                ])
+
+        self.assertEqual(result, 0)
+        self.assertTrue(run_mock.call_args.args[-1])
 
 
 if __name__ == "__main__":

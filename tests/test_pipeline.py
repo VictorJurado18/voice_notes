@@ -58,6 +58,17 @@ class PipelineTests(unittest.TestCase):
 
         self.assertTrue(self.mp3.exists(), "MP3 must not be moved when transcription fails")
 
+    def test_import_copies_media_into_library_without_moving_original(self) -> None:
+        destination = Path(self.tmp) / "library"
+        with patch("record_transcript_resume.pipeline.transcribe", return_value=_fake_segments()), \
+             patch("record_transcript_resume.pipeline.generate", return_value=_fake_synthesis()):
+            result = run(self.mp3, destination, preserve_source=True)
+
+        self.assertTrue(self.mp3.is_file())
+        self.assertTrue(result.mp3_path.is_file())
+        self.assertNotEqual(result.mp3_path, self.mp3)
+        self.assertEqual(result.mp3_path.read_bytes(), self.mp3.read_bytes())
+
     def test_run_synthesis_error_saves_transcript(self) -> None:
         from record_transcript_resume.errors import SynthesisError
         with patch("record_transcript_resume.pipeline.transcribe", return_value=_fake_segments()), \
@@ -68,6 +79,16 @@ class PipelineTests(unittest.TestCase):
         summary = result.summary_path.read_text(encoding="utf-8")
         self.assertIn("unavailable", summary.lower())
         self.assertIn("codex", summary.lower())
+        self.assertTrue(result.summary_failed)
+        self.assertTrue(result.warnings)
+
+    def test_summary_only_failure_keeps_transcript_for_retry(self) -> None:
+        with patch("record_transcript_resume.pipeline.transcribe", return_value=_fake_segments()), \
+             patch("record_transcript_resume.pipeline.generate", side_effect=SynthesisError("login required")):
+            result = run(self.mp3, Path(self.tmp), output_mode="summary")
+
+        self.assertTrue(result.summary_failed)
+        self.assertTrue(result.transcript_path.is_file())
 
     def test_run_resolves_duplicate_folder_name(self) -> None:
         existing = Path(self.tmp) / "test-meeting"
@@ -78,6 +99,29 @@ class PipelineTests(unittest.TestCase):
             result = run(self.mp3, Path(self.tmp))
 
         self.assertEqual(result.folder.name, "test-meeting-2")
+
+    def test_process_recording_in_place_without_nesting_or_moving_audio(self) -> None:
+        folder = Path(self.tmp) / "recording-20260521-120000"
+        folder.mkdir()
+        audio = folder / self.mp3.name
+        self.mp3.replace(audio)
+        with patch("record_transcript_resume.pipeline.transcribe", return_value=_fake_segments()), \
+             patch("record_transcript_resume.pipeline.generate", return_value=_fake_synthesis()):
+            result = run(audio, folder, reuse_source_folder=True)
+
+        self.assertEqual(result.folder, folder)
+        self.assertEqual(result.mp3_path, audio)
+        self.assertTrue(audio.is_file())
+        self.assertTrue((folder / "transcription.md").is_file())
+        self.assertTrue((folder / "summary.md").is_file())
+        self.assertFalse((folder / "test-meeting").exists())
+
+    def test_fallback_folder_uses_audio_stem_once(self) -> None:
+        with patch("record_transcript_resume.pipeline.transcribe", return_value=_fake_segments()), \
+             patch("record_transcript_resume.pipeline.generate", side_effect=SynthesisError("offline")):
+            result = run(self.mp3, Path(self.tmp))
+
+        self.assertEqual(result.folder.name, self.mp3.stem)
 
     def test_run_sanitizes_model_folder_name(self) -> None:
         unsafe = SynthesisResult(folder_name="../Meeting: Q3 / Review", summary_md="# Meeting")

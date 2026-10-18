@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -156,13 +157,62 @@ def generate(
             f"Timeout: {provider} did not respond within {_TIMEOUT}s."
         ) from exc
 
+    if (
+        provider == "codex"
+        and result.returncode != 0
+        and "model is not supported when using Codex with a ChatGPT account"
+        in (result.stderr or "")
+    ):
+        # A stale model in the user's Codex configuration must not prevent
+        # Voice Notes from using the CLI's supported default model.
+        command.insert(2, "--ignore-user-config")
+        try:
+            result = subprocess.run(
+                command,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=_TIMEOUT,
+                encoding="utf-8",
+                env=_provider_environment(),
+                **hidden_process_kwargs(),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise SynthesisError(
+                f"Timeout: {provider} did not respond within {_TIMEOUT}s."
+            ) from exc
+
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
+        detail = (result.stderr or result.stdout or "").strip()
+        errors = [line.strip() for line in detail.splitlines() if line.strip().startswith("ERROR:")]
+        detail = errors[-1] if errors else detail[-500:]
         raise SynthesisError(
-            f"{provider} CLI failed with exit code {result.returncode}: {detail[:500]}"
+            f"{provider} CLI failed with exit code {result.returncode}: {detail}"
         )
 
     return _result_from_stdout(result.stdout.strip())
+
+
+def test_summary_provider(provider: SummaryProvider) -> None:
+    """Send a tiny synthetic prompt through a CLI provider and validate output.
+
+    This is an explicit user action because the provider may consume account
+    usage. No recording, transcript, or summary file is read or written.
+    """
+    if provider not in {"codex", "claude"}:
+        raise SynthesisError(f"Teste de conexão não disponível para o provider: {provider}")
+    result = generate(
+        "Esta é uma transcrição sintética para testar a conexão do Voice Notes. "
+        "Não há reunião nem fatos reais a resumir.",
+        datetime.now().strftime("%Y-%m-%d"),
+        provider=provider,
+        summary_template="meeting",
+        additional_instructions="Este é um teste técnico. Mantenha todas as seções muito curtas.",
+    )
+    if not result.folder_name or result.summary_md.lstrip().startswith("# Summary unavailable"):
+        raise SynthesisError(
+            f"{provider} respondeu, mas não retornou o formato esperado pelo Voice Notes."
+        )
 
 
 def prompt_preview(summary_template: SummaryTemplate) -> str:

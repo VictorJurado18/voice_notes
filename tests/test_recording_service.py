@@ -37,6 +37,9 @@ class RecordingServiceTests(unittest.TestCase):
             self.assertEqual(service.current_output_path, output_path)
             self.assertEqual(backend.started_path, output_path)
             self.assertEqual(output_path.suffix, ".mp3")
+            self.assertEqual(output_path.parent.parent, Path(tmp))
+            self.assertEqual(output_path.parent.name, output_path.stem)
+            self.assertTrue(output_path.parent.is_dir())
 
     def test_start_fails_when_backend_is_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -51,6 +54,7 @@ class RecordingServiceTests(unittest.TestCase):
             self.assertEqual(service.state, RecordingState.ERROR)
             self.assertIsNone(service.current_output_path)
             self.assertIsNotNone(service.last_error)
+            self.assertEqual(list(Path(tmp).iterdir()), [])
 
     def test_stop_finalizes_recording(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -37,6 +37,9 @@ class ProcessingJob:
     transcription_provider: str = "local"
     additional_instructions: str = ""
     separate_speakers: bool = False
+    preserve_source: bool = False
+    reuse_source_folder: bool = False
+    summary_failed: bool = False
 
     @property
     def audio_path(self) -> Path:
@@ -78,6 +81,8 @@ class JobStore:
         transcription_provider: str = "local",
         additional_instructions: str = "",
         separate_speakers: bool = False,
+        preserve_source: bool = False,
+        reuse_source_folder: bool = False,
     ) -> ProcessingJob:
         jobs = self.list()
         normalized = str(mp3_path.resolve())
@@ -101,6 +106,8 @@ class JobStore:
             transcription_provider=transcription_provider,
             additional_instructions=additional_instructions,
             separate_speakers=separate_speakers,
+            preserve_source=preserve_source,
+            reuse_source_folder=reuse_source_folder,
         )
         self._save([*jobs, job])
         return job
@@ -117,6 +124,36 @@ class JobStore:
         if updated is not None:
             self._save(jobs)
         return updated
+
+    def remove(self, job_id: str) -> bool:
+        """Remove one queue record without touching its audio or documents."""
+        jobs = self.list()
+        remaining = [job for job in jobs if job.id != job_id]
+        if len(remaining) == len(jobs):
+            return False
+        self._save(remaining)
+        return True
+
+    def relocate_tree(self, source: Path, destination: Path) -> None:
+        """Update saved job paths after a library folder is moved or renamed."""
+        source = source.resolve()
+        destination = destination.resolve()
+
+        def relocated(value: str) -> str:
+            path = Path(value)
+            try:
+                relative = path.resolve().relative_to(source)
+            except ValueError:
+                return value
+            return str(destination / relative)
+
+        jobs = self.list()
+        changed = [
+            replace(job, mp3_path=relocated(job.mp3_path), output_dir=relocated(job.output_dir))
+            for job in jobs
+        ]
+        if changed != jobs:
+            self._save(changed)
 
     def recoverable(self) -> list[ProcessingJob]:
         """Return interrupted jobs whose original audio still exists.

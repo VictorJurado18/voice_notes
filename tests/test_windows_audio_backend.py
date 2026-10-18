@@ -1,10 +1,17 @@
 ﻿from __future__ import annotations
 
 import unittest
+import sys
+import threading
+import time
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy
 
-from record_transcript_resume.windows_audio_backend import WindowsAudioBackend, WindowsAudioBackendConfig
+from record_transcript_resume.windows_audio_backend import (
+    WindowsAudioBackend, WindowsAudioBackendConfig, _DeviceSpec,
+)
 
 
 class WindowsAudioBackendTests(unittest.TestCase):
@@ -90,6 +97,55 @@ class WindowsAudioBackendTests(unittest.TestCase):
         backend = WindowsAudioBackend(WindowsAudioBackendConfig())
 
         self.assertEqual(backend.device_names, {})
+
+
+def test_silent_loopback_stops_before_native_stream_is_closed(monkeypatch, tmp_path: Path) -> None:
+    class SilentStream:
+        def __init__(self) -> None:
+            self.read_count = 0
+            self.closed = False
+
+        def get_read_available(self) -> int:
+            return 0
+
+        def read(self, *_args: object, **_kwargs: object) -> bytes:
+            self.read_count += 1
+            raise AssertionError("A silent loopback must never enter blocking read")
+
+        def close(self) -> None:
+            self.closed = True
+
+    stream = SilentStream()
+    terminated = []
+
+    class FakePyAudio:
+        def open(self, **_kwargs: object) -> SilentStream:
+            return stream
+
+        def terminate(self) -> None:
+            terminated.append(True)
+
+    monkeypatch.setitem(sys.modules, "pyaudiowpatch", SimpleNamespace(
+        PyAudio=FakePyAudio, paFloat32=1,
+    ))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
+    backend = WindowsAudioBackend(WindowsAudioBackendConfig(capture_microphone=False))
+    monkeypatch.setattr(backend, "_build_encoder", lambda _module: object())
+    output = tmp_path / "silence.mp3"
+    worker = threading.Thread(target=backend._record_loop, args=(
+        output, object(), numpy, None, _DeviceSpec(1, "Silent loopback", 2, 48_000),
+    ))
+
+    worker.start()
+    time.sleep(0.06)
+    backend._stop_event.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert stream.read_count == 0
+    assert stream.closed is True
+    assert terminated == [True]
+    assert backend.thread_error is None
 
 
 if __name__ == "__main__":

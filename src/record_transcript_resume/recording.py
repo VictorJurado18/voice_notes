@@ -29,7 +29,8 @@ class RecordingConfig:
     def build_output_path(self, now: datetime | None = None) -> Path:
         timestamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
         safe_prefix = self.filename_prefix.strip() or "recording"
-        return self.output_dir / f"{safe_prefix}-{timestamp}{self.extension}"
+        name = f"{safe_prefix}-{timestamp}"
+        return self.output_dir / name / f"{name}{self.extension}"
 
 
 class RecordingService:
@@ -89,6 +90,10 @@ class RecordingService:
         try:
             self._backend.start(output_path)
         except RecordingError as exc:
+            try:
+                output_path.parent.rmdir()
+            except OSError:
+                pass
             self._state = RecordingState.ERROR
             self._last_error = str(exc)
             self._current_output_path = None
@@ -145,5 +150,10 @@ class RecordingService:
         output_path = self._config.build_output_path()
         if output_path.exists():
             raise OutputPathError(f"Output file already exists: {output_path}")
+
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=False)
+        except OSError as exc:
+            raise OutputPathError(f"Could not create recording folder: {output_path.parent}") from exc
 
         return output_path
