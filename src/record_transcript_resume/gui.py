@@ -7882,7 +7882,7 @@ class RecorderApp(ctk.CTk):
         self._focus_youtube_process_button.configure(state=tk.DISABLED)
         self.status.set("Baixando áudio do YouTube...")
         self.youtube_hint.set("Baixando e convertendo para MP3…")
-        self.progressbar.pack(fill=tk.X, padx=20, pady=(4, 0))
+        self._pack_global_processing_feedback(include_actions=False)
         self.progressbar.start()
         self._youtube_download_thread = threading.Thread(
             target=self._youtube_download_worker,
@@ -8335,6 +8335,24 @@ class RecorderApp(ctk.CTk):
         self._hide_cancellable_progress()
         self._refresh_compact_controls()
 
+    def _pack_global_processing_feedback(self, *, include_actions: bool = True) -> None:
+        """Place progress before the visible page, including focus-only pages."""
+        anchor = next(
+            (
+                widget for widget in self._container.pack_slaves()
+                if widget not in (self.progressbar, self._processing_actions)
+            ),
+            None,
+        )
+        progress_options: dict[str, object] = {"fill": tk.X, "padx": 20, "pady": (4, 0)}
+        actions_options: dict[str, object] = {"fill": tk.X, "padx": 20, "pady": (7, 0)}
+        if anchor is not None:
+            progress_options["before"] = anchor
+            actions_options["before"] = anchor
+        self.progressbar.pack(**progress_options)
+        if include_actions:
+            self._processing_actions.pack(**actions_options)
+
     def _show_cancellable_progress(self) -> None:
         """Expose one deliberate escape route while the isolated worker starts."""
         self._processing_cancel_requested = False
@@ -8342,9 +8360,8 @@ class RecorderApp(ctk.CTk):
         self._processing_started_at = time.monotonic()
         self._processing_activity = "Processando áudio"
         self._processing_feedback.set("Processando em segundo plano · o áudio salvo será preservado.")
-        self.progressbar.pack(fill=tk.X, padx=20, pady=(4, 0))
+        self._pack_global_processing_feedback()
         self.progressbar.start()
-        self._processing_actions.pack(fill=tk.X, padx=20, pady=(7, 0))
         self.cancel_processing_button.pack(side=tk.RIGHT)
         self.cancel_processing_button.configure(text="Preparando processamento…", state=tk.DISABLED)
 
@@ -8353,9 +8370,8 @@ class RecorderApp(ctk.CTk):
         self._processing_started_at = time.monotonic()
         self._processing_activity = "Gerando resumo"
         self._processing_feedback.set("Gerando nova versão em segundo plano · o resumo atual será preservado até concluir.")
-        self.progressbar.pack(fill=tk.X, padx=20, pady=(4, 0))
+        self._pack_global_processing_feedback()
         self.progressbar.start()
-        self._processing_actions.pack(fill=tk.X, padx=20, pady=(7, 0))
         self.cancel_processing_button.pack_forget()
         self.library_summary_progress_text.set("Gerando nova versão do resumo · 00:00")
         self._library_summary_progress.pack(

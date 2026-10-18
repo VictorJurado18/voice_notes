@@ -270,3 +270,25 @@ def test_empty_system_recording_explains_that_no_computer_sound_was_captured(tmp
 
     message = app._show_stop_error.call_args.args[0]
     assert "Nenhum som do computador foi capturado" in message
+
+
+def test_processing_feedback_appears_before_the_visible_page() -> None:
+    anchor = object()
+    progressbar = Mock()
+    actions = Mock()
+    app = SimpleNamespace(
+        _container=SimpleNamespace(pack_slaves=Mock(return_value=[anchor])),
+        progressbar=progressbar,
+        _processing_actions=actions,
+    )
+
+    RecorderApp._pack_global_processing_feedback(app)
+
+    progressbar.pack.assert_called_once_with(fill=gui.tk.X, padx=20, pady=(4, 0), before=anchor)
+    actions.pack.assert_called_once_with(fill=gui.tk.X, padx=20, pady=(7, 0), before=anchor)
+
+    progressbar.pack.reset_mock()
+    actions.pack.reset_mock()
+    RecorderApp._pack_global_processing_feedback(app, include_actions=False)
+    progressbar.pack.assert_called_once()
+    actions.pack.assert_not_called()
