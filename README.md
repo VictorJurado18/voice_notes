@@ -27,7 +27,8 @@ Quando houver uma nova versão publicada nas [Releases públicas de distribuiç�
 O Voice Notes funciona como um widget, sem a barra branca tradicional das janelas do Windows.
 
 - Arraste a área superior para mover o widget pela tela.
-- Arraste o próprio canto inferior direito para alterar o tamanho. A cápsula, os controles e a tipografia crescem ou diminuem juntos, mantendo a proporção e os cantos arredondados.
+- A janela usa tamanhos fixos: modo foco, tela cheia e modo compacto. Não é necessário ajustar o tamanho arrastando as bordas.
+- Clique em **Tela cheia** ou pressione **F11** para ocupar o monitor atual; **Restaurar** ou **F11** retorna ao tamanho anterior.
 - Quando uma página tiver mais opções do que a altura disponível, role o conteúdo dentro do widget. O cabeçalho, a navegação e os botões de gravar/parar permanecem acessíveis.
 - Clique em **Minimizar** para transformar o app em uma etiqueta discreta. Ela reduz no mesmo local do widget, continua sobre os outros programas, mostra o estado e o nível de áudio e oferece **Iniciar** e **Parar**.
 - Arraste a área informativa da etiqueta para movê-la. Um clique curto nessa área restaura o widget completo no tamanho anterior.
@@ -46,6 +47,8 @@ A transcrição é feita localmente pelo Whisper; ela funciona mesmo antes de vo
 
 O Codex é a opção inicial. O login pertence ao provider escolhido; o Voice Notes não pede sua senha dentro do widget nem abre uma janela preta de terminal.
 
+Em **Ajustes** › **Provider e API**, use **Testar** para confirmar que Codex ou Claude Code conseguem gerar uma resposta. Esse teste envia um texto sintético curto e pode consumir uso da conta.
+
 Para APIs compatíveis com OpenAI, basta informar a URL base, o modelo e o token. Para outros serviços JSON, abra **Opções avançadas** e informe o formato da requisição e o caminho da resposta. O token é salvo no **Cofre de Credenciais do Windows**, não no arquivo de configuração.
 
 ### 4. Fazer a primeira gravação
@@ -56,20 +59,21 @@ Para APIs compatíveis com OpenAI, basta informar a URL base, o modelo e o token
    - **Microfone** para registrar apenas sua voz;
    - **Sistema** para registrar apenas o som reproduzido pelo Windows.
 3. Em **Salvar em**, confira a pasta ou clique em **Alterar**. Por padrão, os arquivos vão para `Música\record-transcript-resume`.
-4. Escolha o **Formato do resumo**: reunião, aula, entrevista, call comercial, brainstorm, resumo executivo, estudo ou plano de ação.
-5. Se desejar, defina **Parar após** um número de minutos ou horas. Deixe vazio para gravar até você parar manualmente.
-6. Clique em **Iniciar gravação**.
-7. Ao terminar, clique em **Parar** ou aguarde o tempo programado.
+4. Em **Depois de parar**, escolha **Salvar só o áudio** (padrão), **Áudio + transcrição** ou **Áudio + transcrição + resumo**. O áudio sempre é salvo antes de qualquer processamento.
+5. Se escolher **Áudio + transcrição + resumo**, aparecem o **Formato do resumo** e as instruções opcionais. Há formatos para reunião, aula, entrevista, call comercial, brainstorm, resumo executivo, estudo e plano de ação.
+6. Se desejar, defina **Parar após** um número de minutos ou horas. Deixe vazio para gravar até você parar manualmente.
+7. Clique em **Iniciar gravação**.
+8. Ao terminar, clique em **Parar** ou aguarde o tempo programado.
 
-O widget mostra as etapas. Você pode ocultá-lo enquanto o áudio é transcrito ou resumido: o trabalho continua em segundo plano. Se você tentar encerrar o aplicativo durante uma gravação, transcrição ou resumo, ele será protegido e irá para a bandeja em vez de perder o trabalho.
+Se você escolheu transcrever ou resumir após parar, o widget abre **Processos** e mostra as etapas. Você pode ocultá-lo durante o processamento: o trabalho continua em segundo plano. Com **Salvar só o áudio**, processe a gravação depois pela **Biblioteca**. Se você tentar encerrar o aplicativo durante uma gravação, transcrição ou resumo, ele será protegido e irá para a bandeja em vez de perder o trabalho.
 
-Ao final, uma pasta semelhante a esta é criada:
+Cada gravação ganha uma pasta própria desde o início. O áudio é salvo nela ao parar; transcrição e resumo aparecem na mesma pasta quando o processamento termina:
 
 ```text
-Música\record-transcript-resume\reuniao-de-planejamento\
+Música\record-transcript-resume\recording-AAAAMMDD-HHMMSS\
     recording-AAAAMMDD-HHMMSS.mp3
-    transcription.md
-    summary.md
+    transcription.md  (quando criada)
+    summary.md        (quando criado)
 ```
 
 ### 5. Escolher a qualidade da transcrição
@@ -83,6 +87,8 @@ Em **Ajustes** › **Transcrição**, escolha o idioma e o modelo Whisper. No pr
 | `small` | Reuniões do dia a dia | Equilíbrio recomendado. |
 | `medium` | Áudio difícil | Mais preciso, mais lento. |
 | `large-v3` | Maior qualidade | Mais pesado e demorado. |
+
+Na mesma página, **Testar modelo** verifica se o modelo selecionado carrega e processa um áudio silencioso temporário. O primeiro teste pode baixar o modelo. O resultado aparece junto ao botão.
 
 ### 6. Separar as pessoas que falaram
 
@@ -108,7 +114,11 @@ Use a página certa para cada situação:
 | Um vídeo do YouTube autorizado | **YouTube** | Cole o link — com ou sem `https://` — e escolha transcrição e resumo, só transcrição ou só resumo. |
 | Uma transcrição/resumo que deseja corrigir | **Biblioteca** | Abra o documento, edite, salve e use **Salvar e gerar resumo**. |
 
-Na **Biblioteca**, também é possível abrir a pasta original e exportar o documento aberto para **DOCX** ou **PDF**.
+Na **Biblioteca**, use **Pasta exibida › Escolher pasta** para consultar gravações de outro local, inclusive uma pasta de gravação individual. Essa escolha é lembrada ao reiniciar e não muda o destino das novas gravações. **Pasta de Gravar** volta a acompanhar o destino configurado na aba Gravar. Também é possível abrir a pasta de resultados e exportar o documento aberto para **DOCX** ou **PDF**. Ao importar um áudio ou vídeo, o Voice Notes preserva o arquivo original e cria uma cópia na pasta de resultados escolhida.
+
+Use a busca por título ou arquivo, filtre por etiqueta, marque favoritos e ajuste o título e as etiquetas para organizar as gravações. A Biblioteca mostra áudio, transcrição e resumo como partes de uma mesma gravação, com a ação disponível junto de cada parte. Os filtros incluem favoritos e estado do resumo. Pastas criadas por versões anteriores continuam acessíveis, inclusive resultados aninhados; a atualização não move arquivos antigos. Em **Processos**, os cinco resultados concluídos mais recentes podem ser abertos diretamente. Falhas e resultados com aviso continuam visíveis, com detalhes e ação para refazer um resumo pendente. Remover um processo da lista não apaga o áudio nem os documentos salvos.
+
+Em **Ajustes** › **Verificação**, confira se a pasta de saída aceita gravações, se o microfone e o áudio do sistema estão disponíveis e se Codex e Claude Code estão conectados. Os botões de teste do Whisper e de geração de resposta são separados: o primeiro pode baixar um modelo, e os testes dos providers podem consumir uso da conta.
 
 Na página **YouTube**, a opção **Só resumo** ainda transcreve o áudio localmente para ter conteúdo para resumir, mas não guarda o arquivo `transcription.md`. Escolha **Só transcrição** se não quiser enviar texto a um provider de IA.
 
@@ -121,6 +131,10 @@ Procure o ícone do Voice Notes perto do relógio do Windows, inclusive dentro d
 #### A transcrição terminou, mas não houve resumo
 
 Abra **Ajustes** › **Provider e API** e confirme o provider. Se for necessário entrar na conta, conclua o login no Prompt de Comando aberto. Depois abra **Arquivo** ou **Biblioteca** e use a opção para tentar o resumo novamente. A transcrição é preservada mesmo quando o resumo falha.
+
+#### A transcrição falhou
+
+Abra **Processos** e selecione **Ver erro** para conferir a etapa, a mensagem completa e o caminho do log. Em **Ajustes** › **Transcrição**, use **Testar modelo** para verificar o Whisper escolhido. Se o modelo não puder ser aberto, confira a conexão com a internet e o espaço livre antes de tentar novamente.
 
 #### Não foi possível separar os falantes (erro 403)
 

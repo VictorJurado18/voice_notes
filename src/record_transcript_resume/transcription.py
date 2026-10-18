@@ -1,6 +1,8 @@
 ﻿from __future__ import annotations
 
 import os
+import tempfile
+import wave
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -40,7 +42,7 @@ def transcribe(
     audio_path: Path, language: str = "pt", model_size: str = "small", provider: str = "local"
 ) -> list[Segment]:
     if not audio_path.is_file():
-        raise TranscriptionError(f"Audio file not found: {audio_path}")
+        raise TranscriptionError(f"Arquivo de áudio não encontrado: {audio_path}")
     if provider.startswith("api:"):
         from record_transcript_resume.api_provider import transcribe_audio
 
@@ -55,7 +57,7 @@ def transcribe(
         from faster_whisper import WhisperModel
     except ImportError as exc:
         raise TranscriptionError(
-            "faster-whisper not installed. Run: pip install faster-whisper"
+            "O componente Whisper local não está instalado. Reinstale o Voice Notes para restaurá-lo."
         ) from exc
 
     from record_transcript_resume.log import log
@@ -71,7 +73,59 @@ def transcribe(
         )
         return [Segment(start=s.start, end=s.end, text=s.text.strip()) for s in raw_segments]
     except Exception as exc:
-        raise TranscriptionError(f"Transcription failed: {exc}") from exc
+        technical_detail = str(exc).strip() or type(exc).__name__
+        if "unable to open file 'model.bin'" in technical_detail.casefold():
+            explanation = (
+                f"Não foi possível abrir os arquivos do modelo Whisper '{model_size}'. "
+                "O modelo pode estar incompleto, bloqueado ou inacessível. "
+                "Em Ajustes > Transcrição, clique em Testar modelo; se o teste falhar, "
+                "confira a conexão com a internet e o espaço livre e tente novamente."
+            )
+        elif isinstance(exc, MemoryError):
+            explanation = (
+                f"A memória disponível não foi suficiente para transcrever com o modelo '{model_size}'. "
+                "Escolha um modelo menor em Ajustes > Transcrição e tente novamente."
+            )
+        else:
+            explanation = f"Falha ao transcrever o áudio com o modelo Whisper '{model_size}'."
+        raise TranscriptionError(f"{explanation}\nDetalhe técnico: {technical_detail}") from exc
+
+
+def test_local_transcription(model_size: str = "small") -> None:
+    """Load the selected local model and run a short, private audio smoke check.
+
+    The generated silent WAV lives in a temporary directory and is removed when
+    the check finishes. The model may be downloaded on first use, just like a
+    normal transcription.
+    """
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as exc:
+        raise TranscriptionError(
+            "faster-whisper não está instalado. Reinstale o Voice Notes para restaurar o Whisper local."
+        ) from exc
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="voice-notes-whisper-check-") as temp_dir:
+            sample_path = Path(temp_dir) / "silence.wav"
+            with wave.open(str(sample_path), "wb") as sample:
+                sample.setnchannels(1)
+                sample.setsampwidth(2)
+                sample.setframerate(16_000)
+                sample.writeframes(b"\x00\x00" * 16_000)
+
+            model = WhisperModel(model_size, device="cpu", compute_type="int8")
+            segments, _info = model.transcribe(
+                str(sample_path), language="pt", beam_size=1, vad_filter=False,
+            )
+            # faster-whisper performs inference lazily; consume its iterator so
+            # this check covers model loading and an actual decode pass.
+            for _segment in segments:
+                pass
+    except Exception as exc:
+        raise TranscriptionError(
+            f"O teste do Whisper local ({model_size}) falhou: {type(exc).__name__}: {exc}"
+        ) from exc
 
 
 def segments_to_markdown(segments: list[Segment]) -> str:

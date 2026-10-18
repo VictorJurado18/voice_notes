@@ -39,6 +39,9 @@ class WindowsAudioBackend(AudioBackend):
         self._error: BaseException | None = None
         self._eq_levels: list[float] = [0.0] * self._N_BANDS
         self._device_names: dict[str, str] = {}
+        # Retain a native stream only if its reader refuses to exit. Releasing
+        # PortAudio while a read is still active can terminate the whole app.
+        self._unreleased_audio: list[tuple[Any, Any, threading.Thread]] = []
 
     @property
     def eq_levels(self) -> list[float]:
@@ -266,7 +269,14 @@ class WindowsAudioBackend(AudioBackend):
                 def _loop_reader_fn() -> None:
                     while not self._stop_event.is_set():
                         try:
-                            data = loop_stream.read(_OUT, exception_on_overflow=False)
+                            # Some WASAPI loopback drivers block read() until
+                            # another app plays sound. Poll the available frame
+                            # count so Stop can always join this reader first.
+                            frames = min(_OUT, loop_stream.get_read_available())
+                            if frames <= 0:
+                                _time.sleep(0.01)
+                                continue
+                            data = loop_stream.read(frames, exception_on_overflow=False)
                             loop_q.put(bytes(data))
                         except OSError:
                             break
@@ -280,6 +290,7 @@ class WindowsAudioBackend(AudioBackend):
             _start_wall = _time.monotonic()
 
             def _drain(q: q_module.Queue, spec: _DeviceSpec, buf: Any) -> Any:
+                parts: list[Any] = []
                 while True:
                     try:
                         raw = q.get_nowait()
@@ -287,10 +298,14 @@ class WindowsAudioBackend(AudioBackend):
                         if spec.rate != self._config.sample_rate:
                             part = self._resample(numpy, part, spec.rate, self._config.sample_rate)
                         part = self._ensure_channels(numpy, part)
-                        buf = numpy.concatenate([buf, part], axis=0) if len(buf) else part
+                        parts.append(part)
                     except q_module.Empty:
                         break
-                return buf
+                if not parts:
+                    return buf
+                if len(buf):
+                    parts.insert(0, buf)
+                return numpy.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
 
             with output_path.open("wb") as file:
                 while not self._stop_event.is_set():
@@ -371,14 +386,21 @@ class WindowsAudioBackend(AudioBackend):
             if mic_stream is not None:
                 mic_stream.stop_stream()
                 mic_stream.close()
-            # Join reader thread before closing the stream: closing a stream while
-            # another thread is blocking in read() crashes PortAudio's C layer.
-            # stop_event is already set, so the reader exits within one read() cycle (~100 ms).
+            # Closing a native stream during read() can crash the process.
             if loop_reader is not None:
                 loop_reader.join(timeout=2.0)
-            if loop_stream is not None:
-                loop_stream.close()
-            p.terminate()
+            if loop_reader is not None and loop_reader.is_alive():
+                self._unreleased_audio.append((p, loop_stream, loop_reader))
+                if self._error is None:
+                    self._error = RecordingError(
+                        "O dispositivo de áudio do sistema não encerrou a captura. "
+                        "Reinicie o Voice Notes antes de gravar novamente."
+                    )
+                log("Loopback reader remained active; native stream retained to avoid a crash")
+            else:
+                if loop_stream is not None:
+                    loop_stream.close()
+                p.terminate()
 
     # ── Utilidades ────────────────────────────────────────────────────────────
 

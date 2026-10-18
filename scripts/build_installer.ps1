@@ -93,4 +93,13 @@ if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup failed."
 }
 
-Write-Host "Installer created at: $DistDir\VoiceNotes-Setup.exe"
+$VersionMatch = Select-String -Path (Join-Path $ProjectRoot "pyproject.toml") -Pattern '^version\s*=\s*"([^"]+)"'
+if (-not $VersionMatch) {
+    throw "Could not read the application version from pyproject.toml."
+}
+$Version = $VersionMatch.Matches[0].Groups[1].Value
+$InstallerPath = Join-Path $DistDir "VoiceNotes-Setup-$Version.exe"
+if (-not (Test-Path -LiteralPath $InstallerPath)) {
+    throw "Installer was not generated: $InstallerPath"
+}
+Write-Host "Installer created at: $InstallerPath"

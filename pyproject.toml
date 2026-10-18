@@ -1,6 +1,6 @@
 [project]
 name = "record-transcript-resume"
-version = "0.10.24"
+version = "0.10.25"
 description = "Windows app to record audio locally, transcribe with Whisper, and summarize via Codex or Claude Code CLI."
 requires-python = ">=3.12"
 dependencies = [
@@ -9,6 +9,7 @@ dependencies = [
     "numpy>=1.24",
     "pyaudiowpatch>=0.2.12",
     "faster-whisper>=1.0",
+    "av>=11,<19",  # faster-whisper 1.2.1 ainda usa metadata_errors, removido no PyAV 19
     "pillow>=10.0",
     "pystray>=0.19.5",
     "keyring>=25.7",
