@@ -26,6 +26,30 @@ class _BoolValue:
         return self.value
 
 
+def test_wav_preview_retries_when_the_legacy_driver_rejects_a_long_path(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(gui.sys, "platform", "win32")
+    commands = []
+
+    def mci(command: str) -> str:
+        commands.append(command)
+        if "type waveaudio" in command:
+            raise OSError("Nome de arquivo inválido")
+        return "1000" if command.endswith("length") else "0" if command.endswith("position") else ""
+
+    app = SimpleNamespace(
+        _browser_selected=SimpleNamespace(path=tmp_path / "gravação.wav", kind="audio"),
+        _browser_audio_path=None, _browser_audio_playing=False,
+        _browser_mci=mci, _close_browser_audio=Mock(),
+        _browser_play_button=Mock(), _tick_browser_audio=Mock(),
+    )
+    RecorderApp._browser_toggle_audio(app)
+
+    assert len([command for command in commands if "type mpegvideo" in command]) == 1
+    assert app._browser_audio_playing is True
+    assert app._browser_audio_duration == 1000
+    app._tick_browser_audio.assert_called_once()
+
+
 def test_pipeline_steps_match_transcription_only_flow() -> None:
     app = SimpleNamespace(
         _pipeline_output_mode="transcription",
