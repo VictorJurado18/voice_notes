@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from record_transcript_resume.paths import app_data_dir
+from record_transcript_resume.themes import DEFAULT_THEME, THEME_LABELS
 
 
 def _path(path: Path | None = None) -> Path:
@@ -56,4 +57,19 @@ def save_library_directory(directory: str, path: Path | None = None) -> None:
         payload["library_directory"] = directory.strip()
     else:
         payload.pop("library_directory", None)
+    _save(payload, path)
+
+
+def load_color_theme(path: Path | None = None) -> str:
+    """Return the saved color theme, falling back to the original violet theme."""
+    value = _load(path).get("color_theme", DEFAULT_THEME)
+    return value if isinstance(value, str) and value in THEME_LABELS else DEFAULT_THEME
+
+
+def save_color_theme(theme: str, path: Path | None = None) -> None:
+    """Persist a supported color theme while preserving other preferences."""
+    if theme not in THEME_LABELS:
+        raise ValueError(f"Tema de cores desconhecido: {theme}")
+    payload = _load(path)
+    payload["color_theme"] = theme
     _save(payload, path)
