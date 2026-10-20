@@ -33,6 +33,9 @@ from record_transcript_resume.jobs import JobStore, ProcessingJob
 from record_transcript_resume.library import (
     BrowserEntry, LibraryItem, LibraryMetadataStore, browse_directory, discover_recordings,
 )
+from record_transcript_resume.library_actions import (
+    checked_delete_target, path_is_within, recycle_library_entry,
+)
 from record_transcript_resume.synthesis import SUMMARY_TEMPLATE_LABELS, profile_prompt_seed, prompt_preview
 from record_transcript_resume.windows_process import hidden_process_kwargs
 
@@ -180,6 +183,8 @@ _BUTTON_HELP: dict[str, str] = {
     "Título e etiquetas": "Organiza o item selecionado com um título e etiquetas.",
     "Editar": "Abre o item selecionado para edição.",
     "Remover": "Remove o item selecionado desta lista.",
+    "Excluir": "Envia o arquivo ou a pasta selecionada para a Lixeira. Pede confirmação antes de excluir.",
+    "Enviando…": "Aguarde o envio do item selecionado para a Lixeira.",
     "Abrir pasta": "Abre a pasta selecionada no Explorador de Arquivos.",
     "Exportar DOCX": "Exporta o documento selecionado para Word (.docx).",
     "Exportar PDF": "Exporta o documento selecionado para PDF.",
@@ -419,6 +424,8 @@ class RecorderApp(ctk.CTk):
         self._library_metadata = LibraryMetadataStore()
         self._library_items: list[LibraryItem] = []
         self._browser_directory: Path | None = None
+        self._browser_delete_pending: Path | None = None
+        self._summary_source_path: Path | None = None
         self._library_render_after: str | None = None
         self._library_render_signature: tuple[object, ...] | None = None
         self._recent_render_signature: tuple[LibraryItem, ...] | None = None
@@ -2573,6 +2580,13 @@ class RecorderApp(ctk.CTk):
             toolbar, text="Renomear", command=self._browser_rename_folder,
             width=112, height=34, fg_color=_theme_color("#263550"))
         self._browser_rename_button.pack(side=tk.LEFT, padx=(7, 0))
+        self._browser_delete_button = ctk.CTkButton(
+            toolbar, text="Excluir", command=self._browser_delete,
+            width=88, height=34, state=tk.DISABLED,
+            fg_color=_COLORS["danger_soft"], hover_color=_COLORS["surface_button_hover"],
+            text_color=_COLORS["danger"],
+        )
+        self._browser_delete_button.pack(side=tk.LEFT, padx=(7, 0))
         self._browser_sort = tk.StringVar(value="Nome A–Z")
         ctk.CTkOptionMenu(toolbar, variable=self._browser_sort,
                           values=["Nome A–Z", "Nome Z–A", "Mais recentes", "Mais antigos"],
@@ -2612,6 +2626,7 @@ class RecorderApp(ctk.CTk):
         self._browser_canvas.bind("<Double-1>", self._browser_canvas_open)
         self._browser_canvas.bind("<MouseWheel>", self._browser_canvas_scroll)
         self._browser_canvas.bind("<Return>", self._browser_open)
+        self._browser_canvas.bind("<Delete>", self._browser_delete)
         self._browser_count = tk.StringVar(value="")
         ctk.CTkLabel(table_holder, textvariable=self._browser_count, font=("Segoe UI", 10),
                      text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, pady=(7, 3))
@@ -6185,6 +6200,9 @@ class RecorderApp(ctk.CTk):
             self._browser_canvas.focus_set()
             self._draw_browser_rows()
             self._browser_select()
+        else:
+            self._browser_selected = None
+            self._render_focus_browser()
 
     def _browser_canvas_open(self, event: tk.Event[tk.Misc]) -> None:
         self._browser_canvas_select(event)
@@ -6320,11 +6338,20 @@ class RecorderApp(ctk.CTk):
         return "\n".join(details)
 
     def _browser_update_folder_actions(self) -> None:
-        can_manage = self._browser_manage_target() is not None
+        deleting = self._browser_delete_pending is not None
+        can_manage = self._browser_manage_target() is not None and not deleting
         for button in (self._browser_move_button, self._browser_rename_button):
             button.configure(state=tk.NORMAL if can_manage else tk.DISABLED)
+        self._browser_delete_button.configure(
+            state=tk.NORMAL if self._browser_selected is not None and not deleting else tk.DISABLED,
+            text="Enviando…" if deleting else "Excluir",
+        )
+        self._browser_process_button.configure(state=tk.DISABLED if deleting else tk.NORMAL)
 
     def _browser_navigate(self, directory: Path, *, remember: bool = True) -> None:
+        if (getattr(self, "_browser_delete_pending", None) is not None
+                and self._pending_library_delete_blocks(directory)):
+            return
         if not directory.is_dir():
             messagebox.showerror("Pasta indisponível", f"Não foi possível abrir:\n{directory}", parent=self)
             return
@@ -6348,6 +6375,9 @@ class RecorderApp(ctk.CTk):
     def _browser_open(self, _event: object = None) -> None:
         entry = self._browser_selected
         if entry is None:
+            return
+        if (getattr(self, "_browser_delete_pending", None) is not None
+                and self._pending_library_delete_blocks(entry.path)):
             return
         if entry.kind in {"folder", "recording", "text_record"}:
             self._browser_navigate(entry.path)
@@ -6407,6 +6437,9 @@ class RecorderApp(ctk.CTk):
 
     def _browser_toggle_audio(self) -> None:
         entry = self._browser_selected
+        if (getattr(self, "_browser_delete_pending", None) is not None and entry is not None
+                and self._pending_library_delete_blocks(entry.path)):
+            return
         if entry is None or entry.kind != "audio":
             return
         if sys.platform != "win32":
@@ -6490,6 +6523,9 @@ class RecorderApp(ctk.CTk):
         directory = self._browser_directory
         if directory is None:
             return
+        if (getattr(self, "_browser_delete_pending", None) is not None
+                and self._pending_library_delete_blocks(directory)):
+            return
         name = simpledialog.askstring("Nova pasta", "Nome da pasta:", parent=self)
         if name is None:
             return
@@ -6512,7 +6548,140 @@ class RecorderApp(ctk.CTk):
         root = Path(self.library_dir.get() or default_output_dir()).expanduser()
         return directory if directory is not None and directory != root else None
 
+    def _pending_library_delete_blocks(self, *paths: Path) -> bool:
+        pending = self._browser_delete_pending
+        if pending is None:
+            return False
+        if any(path_is_within(path, pending) or path_is_within(pending, path) for path in paths):
+            messagebox.showinfo(
+                "Envio à Lixeira em andamento",
+                "Aguarde o envio do item à Lixeira antes de usar esta pasta.", parent=self,
+            )
+            return True
+        return False
+
+    def _browser_delete_busy_reason(self, target: Path) -> str | None:
+        service = self._service
+        finalizing = self._stop_thread is not None and self._stop_thread.is_alive()
+        if service is not None and (
+            service.state in {RecordingState.RECORDING, RecordingState.FINALIZING} or finalizing
+        ):
+            audio = service.current_output_path
+            if audio is not None and path_is_within(audio, target):
+                return "Pare a gravação e aguarde o áudio terminar de ser salvo antes de excluí-lo."
+        for job in self._job_store.list():
+            if job.status not in {"queued", "running"}:
+                continue
+            audio, output = Path(job.mp3_path), Path(job.output_dir)
+            if (path_is_within(audio, target) or path_is_within(output, target)
+                    or path_is_within(target, output)):
+                return (
+                    "Este item está em uso por um processamento ou está na fila. "
+                    "Aguarde a conclusão ou cancele o processamento na tela Processos."
+                )
+        if self._summary_source_path is not None:
+            folder = self._summary_source_path.parent
+            if path_is_within(folder, target) or path_is_within(target, folder):
+                return "Aguarde a geração do resumo desta gravação terminar antes de excluí-la."
+        if self._youtube_download_thread is not None and self._youtube_download_thread.is_alive():
+            return "Aguarde o download de áudio terminar antes de excluir itens da Biblioteca."
+        return None
+
+    def _browser_delete(self, _event: object = None) -> str:
+        # Unlike move/rename, deletion never falls back to the current folder.
+        entry = self._browser_selected
+        directory = self._browser_directory
+        if entry is None or directory is None or self._browser_delete_pending is not None:
+            return "break"
+        roots = (
+            Path(self.library_dir.get() or default_output_dir()).expanduser(),
+            Path(self.output_dir.get() or default_output_dir()).expanduser(),
+        )
+        try:
+            target = checked_delete_target(directory, entry.path, protected_roots=roots)
+            reason = self._browser_delete_busy_reason(target)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Não foi possível excluir", str(exc), parent=self)
+            return "break"
+        if reason:
+            messagebox.showinfo("Item em uso", reason, parent=self)
+            return "break"
+        contents = (
+            "A pasta inteira será enviada para a Lixeira, incluindo os áudios, "
+            "transcrições, resumos e subpastas que ela contém."
+            if target.is_dir() else "Este arquivo será enviado para a Lixeira."
+        )
+        if not messagebox.askyesno(
+            "Enviar para a Lixeira?",
+            f"{entry.title}\n\n{target}\n\n{contents}\n\n"
+            "Você poderá restaurar o item pela Lixeira do Windows.",
+            parent=self, default=messagebox.NO, icon=messagebox.WARNING,
+        ):
+            return "break"
+        editor_path = self._editor_document_path
+        if editor_path is not None and path_is_within(editor_path, target):
+            if not self._close_transcript_editor():
+                return "break"
+        try:
+            # Native modal dialogs continue to process events. A queued job or
+            # recording may have started while the confirmation was open.
+            target = checked_delete_target(directory, target, protected_roots=roots)
+            reason = self._browser_delete_busy_reason(target)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Não foi possível excluir", str(exc), parent=self)
+            return "break"
+        if reason:
+            messagebox.showinfo("Item em uso", reason, parent=self)
+            return "break"
+        playing = self._browser_audio_path
+        if playing is not None and path_is_within(playing, target):
+            self._close_browser_audio()
+        self._browser_delete_pending = target
+        self._browser_update_folder_actions()
+        self.status.set(f"Enviando {target.name} para a Lixeira…")
+        worker = threading.Thread(
+            target=self._browser_delete_worker, args=(directory, target, roots), daemon=True,
+        )
+        try:
+            worker.start()
+        except RuntimeError as exc:
+            self._on_browser_delete_done(target, str(exc))
+        return "break"
+
+    def _browser_delete_worker(self, directory: Path, target: Path, roots: tuple[Path, ...]) -> None:
+        try:
+            recycle_library_entry(directory, target, protected_roots=roots)
+        except Exception as exc:
+            self._post_to_ui(self._on_browser_delete_done, target, str(exc))
+        else:
+            self._post_to_ui(self._on_browser_delete_done, target, None)
+
+    def _on_browser_delete_done(self, target: Path, error: str | None) -> None:
+        self._browser_delete_pending = None
+        if error is None:
+            if self._browser_selected is not None and self._browser_selected.path == target:
+                self._browser_selected = None
+            self._browser_history = [folder for folder in self._browser_history if folder.is_dir()]
+            if self._last_output is not None and path_is_within(self._last_output, target):
+                self._last_output = None
+                self.retry_summary_button.configure(state=tk.DISABLED)
+            self.status.set(f"{target.name} enviado para a Lixeira")
+        else:
+            self.status.set("Não foi possível concluir o envio à Lixeira")
+        self._refresh_library()
+        if self._browser_selected is not None:
+            self._browser_select()
+        if error is not None:
+            messagebox.showerror(
+                "Não foi possível enviar à Lixeira",
+                f"{target}\n\n{error}\n\n"
+                "Feche o arquivo se ele estiver aberto em outro programa e tente novamente.",
+                parent=self,
+            )
+
     def _browser_relocate(self, source: Path, destination: Path) -> None:
+        if self._pending_library_delete_blocks(source, destination):
+            return
         if destination.exists():
             messagebox.showerror("Pasta existente", "Já existe uma pasta com esse nome no destino.", parent=self)
             return
@@ -7505,6 +7674,9 @@ class RecorderApp(ctk.CTk):
 
     def _retry_job(self, job_id: str) -> None:
         job = next((item for item in self._job_store.list() if item.id == job_id), None)
+        if (job is not None and getattr(self, "_browser_delete_pending", None) is not None
+                and self._pending_library_delete_blocks(job.audio_path, Path(job.output_dir))):
+            return
         if job is None or not job.audio_path.is_file():
             messagebox.showerror("Áudio indisponível", "O arquivo de áudio desse processamento não foi encontrado.")
             return
@@ -7615,6 +7787,9 @@ class RecorderApp(ctk.CTk):
         self._open_library_document(item.summary_path, "RESUMO · EDITE E SALVE DIRETAMENTE NO APP", is_transcript=False)
 
     def _open_library_document(self, path: Path, title: str, *, is_transcript: bool) -> None:
+        if (getattr(self, "_browser_delete_pending", None) is not None
+                and self._pending_library_delete_blocks(path)):
+            return
         try:
             content = path.read_text(encoding="utf-8")
         except OSError as exc:
@@ -7956,6 +8131,9 @@ class RecorderApp(ctk.CTk):
         self._refresh_compact_controls()
 
     def _start_recording(self) -> None:
+        if (getattr(self, "_browser_delete_pending", None) is not None
+                and self._pending_library_delete_blocks(Path(self.output_dir.get() or default_output_dir()))):
+            return
         try:
             limit_seconds = self._recording_timer_seconds(
                 self.recording_limit_value.get(), self.recording_limit_unit.get()
@@ -8128,6 +8306,9 @@ class RecorderApp(ctk.CTk):
 
     def _process_youtube(self) -> None:
         """Download authorized YouTube audio off the Tk thread, then queue it."""
+        if (getattr(self, "_browser_delete_pending", None) is not None
+                and self._pending_library_delete_blocks(Path(self.output_dir.get() or default_output_dir()))):
+            return
         url = self.youtube_url.get().strip()
         if not url:
             messagebox.showerror("Link ausente", "Cole o link de um vídeo do YouTube antes de continuar.")
@@ -8279,6 +8460,9 @@ class RecorderApp(ctk.CTk):
     def _save_imported_text(self) -> Path | None:
         from record_transcript_resume.documents import create_imported_transcript
 
+        if (getattr(self, "_browser_delete_pending", None) is not None
+                and self._pending_library_delete_blocks(Path(self.output_dir.get() or default_output_dir()))):
+            return None
         editor = self._active_import_text_editor()
         text = editor.get("1.0", "end-1c")
         try:
@@ -8323,6 +8507,9 @@ class RecorderApp(ctk.CTk):
         reuse_source_folder: bool = False,
     ) -> bool:
         """Persist the job before doing any expensive work."""
+        if (getattr(self, "_browser_delete_pending", None) is not None
+                and self._pending_library_delete_blocks(mp3_path, output_dir or mp3_path.parent)):
+            return False
         if not mp3_path.is_file():
             messagebox.showerror("Áudio não encontrado", f"Não foi possível encontrar:\n{mp3_path}")
             return False
@@ -8516,6 +8703,9 @@ class RecorderApp(ctk.CTk):
         job_id: str | None = None,
     ) -> None:
         """Regenerate a saved summary, preserving the audio and transcription."""
+        if (getattr(self, "_browser_delete_pending", None) is not None
+                and self._pending_library_delete_blocks(transcript_path.parent)):
+            return
         if self._pipeline_thread is not None and self._pipeline_thread.is_alive():
             messagebox.showinfo(
                 "Processamento em andamento",
@@ -8537,6 +8727,7 @@ class RecorderApp(ctk.CTk):
             daemon=True,
         )
         self._pipeline_thread.start()
+        self._summary_source_path = transcript_path
         if instructions_were_explicitly_chosen or additional_instructions:
             self._clear_meeting_instructions()
         self._tray.notify("Voice Notes", "Gerando uma nova versão do resumo em segundo plano.")
@@ -8564,6 +8755,7 @@ class RecorderApp(ctk.CTk):
         self._post_to_ui(self._on_summary_retry_done, summary_path, job_id)
 
     def _on_summary_retry_done(self, summary_path: Path, job_id: str | None = None) -> None:
+        self._summary_source_path = None
         self.status.set("Resumo atualizado com sucesso")
         if job_id is not None:
             self._job_store.update(job_id, status="completed", stage="Resumo concluído", error="", summary_failed=False)
@@ -8576,6 +8768,7 @@ class RecorderApp(ctk.CTk):
         self._tray.notify("Resumo concluído", f"Nova versão salva em {summary_path.parent.name}.")
 
     def _on_summary_retry_error(self, message: str, job_id: str | None = None) -> None:
+        self._summary_source_path = None
         self.status.set("Não foi possível gerar o resumo")
         if job_id is not None:
             self._job_store.update(job_id, status="warning", stage="Resumo ainda pendente", error=message)
@@ -9155,6 +9348,8 @@ class RecorderApp(ctk.CTk):
 
     def _active_work_description(self) -> str | None:
         """Return the operation that must not be accidentally interrupted."""
+        if getattr(self, "_browser_delete_pending", None) is not None:
+            return "exclusão de um item"
         if self._service is not None and self._service.state == RecordingState.RECORDING:
             return "gravação"
         if self._stop_thread is not None and self._stop_thread.is_alive():

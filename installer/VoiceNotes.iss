@@ -1,5 +1,5 @@
 #define MyAppName "Voice Notes"
-#define MyAppVersion "0.10.26"
+#define MyAppVersion "0.10.27"
 #define MyAppPublisher "Voice Notes"
 #define MyAppExeName "VoiceNotes.exe"
 
