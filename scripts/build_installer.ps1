@@ -60,6 +60,7 @@ Write-Host "Building standalone Voice Notes application..."
     --collect-all imageio_ffmpeg `
     --collect-all docx `
     --collect-all reportlab `
+    --collect-all send2trash `
     --hidden-import lameenc `
     --hidden-import numpy `
     --distpath $DistDir `
