@@ -3830,7 +3830,7 @@ class RecorderApp(ctk.CTk):
             if isinstance(candidate, dict) and candidate.get("type") in {"done", "error"}:
                 event = candidate
         if process.returncode == 0 and event is not None and event.get("type") == "done":
-            self._post_to_ui(self._finish_local_transcription_test, model_size, True, "")
+            self._post_to_ui(self._finish_local_transcription_test, model_size, True, str(event.get("device", "")))
             return
 
         error_type = str(event.get("error_type", "")) if event else ""
@@ -3846,8 +3846,9 @@ class RecorderApp(ctk.CTk):
         self.local_transcription_test_button.configure(state=tk.NORMAL, text="Testar modelo")
         self.install_local_test_button.configure(state=tk.NORMAL, text="Testar modelo selecionado")
         if succeeded:
+            processor = "GPU NVIDIA" if detail == "cuda" else "CPU"
             self.local_transcription_test_status.set(
-                f"OK · modelo {model_size} carregou e processou o teste local."
+                f"OK · modelo {model_size} processou o teste na {processor}."
             )
             self.local_transcription_test_label.configure(text_color=_theme_color("#55D6A0"))
         else:

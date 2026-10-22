@@ -94,6 +94,8 @@ Em **Ajustes** › **Transcrição**, escolha o idioma e o modelo Whisper. No pr
 
 Na mesma página, **Testar modelo** verifica se o modelo selecionado carrega e processa um áudio silencioso temporário. O primeiro teste pode baixar o modelo. O resultado aparece junto ao botão.
 
+Em computadores com uma GPU NVIDIA compatível, o Voice Notes tenta acelerar a transcrição automaticamente. O instalador inclui as bibliotecas CUDA necessárias; se a GPU estiver indisponível, sem memória suficiente ou ocorrer um erro no processamento, o app repete a transcrição na CPU. **Testar modelo** informa qual dispositivo processou o teste. GPUs AMD e Intel continuam usando a CPU nesta versão.
+
 ### 6. Separar as pessoas que falaram
 
 O Voice Notes pode identificar blocos como **Pessoa 1**, **Pessoa 2** e assim por diante. Ele não adivinha nomes por conta própria, mas a Biblioteca pode sugerir uma troca quando uma autoapresentação for muito clara — você sempre confirma antes de aplicar.
@@ -203,7 +205,7 @@ O processo pesado de transcrição e resumo roda em um subprocesso separado. Ass
 | Python 3.12+ | Aplicação e ferramentas de desenvolvimento. |
 | CustomTkinter + Tk | Widget sem borda, páginas e controles. |
 | PyAudioWPatch | Microfone e loopback de áudio do Windows. |
-| faster-whisper / CTranslate2 | Transcrição local. |
+| faster-whisper / CTranslate2 | Transcrição local; CUDA em GPUs NVIDIA compatíveis, com alternativa automática na CPU. |
 | pyannote.audio | Diarização opcional de falantes. |
 | Codex CLI / Claude Code | Providers de resumo via login do usuário. |
 | `urllib` + Keyring | Provider por token e armazenamento seguro de credenciais. |

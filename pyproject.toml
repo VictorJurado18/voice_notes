@@ -1,6 +1,6 @@
 [project]
 name = "record-transcript-resume"
-version = "0.10.28"
+version = "0.10.29"
 description = "Windows app to record audio locally, transcribe with Whisper, and summarize via Codex or Claude Code CLI."
 requires-python = ">=3.12"
 dependencies = [
@@ -24,6 +24,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 build = ["pyinstaller>=6.11"]
+gpu = [
+    "nvidia-cublas-cu12==12.9.2.10; sys_platform == 'win32'",
+    "nvidia-cudnn-cu12==9.27.0.42; sys_platform == 'win32'",
+    "nvidia-cuda-nvrtc-cu12==12.9.86; sys_platform == 'win32'",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

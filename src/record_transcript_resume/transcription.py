@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import wave
 from dataclasses import dataclass, replace
@@ -11,6 +12,66 @@ from record_transcript_resume.errors import TranscriptionError
 # Modelos multilíngues disponíveis pelo faster-whisper.  O large-v2 foi
 # substituído por large-v3 na interface para evitar uma escolha redundante.
 _ALL_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
+_CUDA_DLL_HANDLES: list[object] = []
+
+
+def _prepare_cuda_runtime() -> None:
+    """Expose NVIDIA wheel DLLs to CTranslate2 in an installed Windows app."""
+    if os.name != "nt":
+        return
+    roots = [Path(sys.prefix) / "Lib" / "site-packages"]
+    if getattr(sys, "frozen", False):
+        roots.insert(0, Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)))
+    for root in roots:
+        for component in ("cublas", "cudnn", "cuda_nvrtc"):
+            directory = root / "nvidia" / component / "bin"
+            if directory.is_dir() and str(directory) not in os.environ.get("PATH", "").split(os.pathsep):
+                _CUDA_DLL_HANDLES.append(os.add_dll_directory(str(directory)))
+                os.environ["PATH"] = str(directory) + os.pathsep + os.environ.get("PATH", "")
+
+
+def _cuda_available() -> bool:
+    """A visible GPU is only a candidate; model loading and decoding verify it."""
+    try:
+        import ctranslate2
+
+        return ctranslate2.get_cuda_device_count() > 0
+    except Exception:
+        return False
+
+
+def _run_local_whisper(
+    model_size: str, audio_path: Path, language: str, **transcribe_options: object,
+) -> tuple[list[object], str]:
+    from faster_whisper import WhisperModel
+    from record_transcript_resume.log import log
+    from record_transcript_resume.resource_policy import transcription_threads
+
+    cuda_available = _cuda_available()
+    if cuda_available:
+        try:
+            _prepare_cuda_runtime()
+        except (OSError, AttributeError) as exc:
+            log(f"Whisper CUDA setup failed; using CPU | {type(exc).__name__}: {exc}")
+            cuda_available = False
+    devices = [("cuda", "auto"), ("cpu", "int8")] if cuda_available else [("cpu", "int8")]
+    for device, compute_type in devices:
+        try:
+            model = WhisperModel(
+                model_size, device=device, compute_type=compute_type,
+                cpu_threads=transcription_threads(), num_workers=1,
+            )
+            segments, _ = model.transcribe(str(audio_path), language=language, **transcribe_options)
+            # Inference is lazy. Consume the iterator here so CUDA errors can
+            # trigger a clean retry from the beginning on the CPU.
+            result = list(segments)
+            log(f"Whisper completed | device={device} model={model_size} file={audio_path.name}")
+            return result, device
+        except Exception as exc:
+            if device != "cuda":
+                raise
+            log(f"Whisper CUDA unavailable; retrying on CPU | {type(exc).__name__}: {exc}")
+    raise AssertionError("Whisper had no available device")
 
 
 def _hf_cache_dir() -> Path:
@@ -54,7 +115,7 @@ def transcribe(
         raise TranscriptionError(f"Unsupported transcription provider: {provider}")
 
     try:
-        from faster_whisper import WhisperModel
+        import faster_whisper  # noqa: F401 - check before entering the retry path
     except ImportError as exc:
         raise TranscriptionError(
             "O componente Whisper local não está instalado. Reinstale o Voice Notes para restaurá-lo."
@@ -64,14 +125,11 @@ def transcribe(
     log(f"Transcription started | model={model_size} language={language} file={audio_path.name}")
 
     try:
-        from record_transcript_resume.resource_policy import transcription_threads
-        model = WhisperModel(model_size, device="cpu", compute_type="int8",
-                             cpu_threads=transcription_threads(), num_workers=1)
         # Meetings often contain long pauses. The library's conservative VAD
         # skips only silence longer than two seconds, preserving spoken content
         # and timestamps while avoiding needless CPU inference over silence.
-        raw_segments, _ = model.transcribe(
-            str(audio_path), language=language, vad_filter=True,
+        raw_segments, _device = _run_local_whisper(
+            model_size, audio_path, language, vad_filter=True,
         )
         return [Segment(start=s.start, end=s.end, text=s.text.strip()) for s in raw_segments]
     except Exception as exc:
@@ -93,7 +151,7 @@ def transcribe(
         raise TranscriptionError(f"{explanation}\nDetalhe técnico: {technical_detail}") from exc
 
 
-def test_local_transcription(model_size: str = "small") -> None:
+def test_local_transcription(model_size: str = "small") -> str:
     """Load the selected local model and run a short, private audio smoke check.
 
     The generated silent WAV lives in a temporary directory and is removed when
@@ -101,7 +159,7 @@ def test_local_transcription(model_size: str = "small") -> None:
     normal transcription.
     """
     try:
-        from faster_whisper import WhisperModel
+        import faster_whisper  # noqa: F401
     except ImportError as exc:
         raise TranscriptionError(
             "faster-whisper não está instalado. Reinstale o Voice Notes para restaurar o Whisper local."
@@ -116,14 +174,10 @@ def test_local_transcription(model_size: str = "small") -> None:
                 sample.setframerate(16_000)
                 sample.writeframes(b"\x00\x00" * 16_000)
 
-            model = WhisperModel(model_size, device="cpu", compute_type="int8")
-            segments, _info = model.transcribe(
-                str(sample_path), language="pt", beam_size=1, vad_filter=False,
+            _segments, device = _run_local_whisper(
+                model_size, sample_path, "pt", beam_size=1, vad_filter=False,
             )
-            # faster-whisper performs inference lazily; consume its iterator so
-            # this check covers model loading and an actual decode pass.
-            for _segment in segments:
-                pass
+            return device
     except Exception as exc:
         raise TranscriptionError(
             f"O teste do Whisper local ({model_size}) falhou: {type(exc).__name__}: {exc}"

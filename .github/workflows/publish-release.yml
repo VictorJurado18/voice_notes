@@ -33,7 +33,7 @@ jobs:
 
       - name: Install dependencies
         shell: pwsh
-        run: .\.venv\Scripts\python.exe -m pip install --upgrade pip; .\.venv\Scripts\python.exe -m pip install -e ".[dev,build]"
+        run: .\.venv\Scripts\python.exe -m pip install --upgrade pip; .\.venv\Scripts\python.exe -m pip install -e ".[dev,build,gpu]"
 
       - name: Run tests
         shell: pwsh
