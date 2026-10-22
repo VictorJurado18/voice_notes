@@ -35,6 +35,7 @@ def deletion(tmp_path: Path, monkeypatch):
         _refresh_library=Mock(), _browser_select=Mock(), retry_summary_button=Mock(),
     )
     app._browser_delete_busy_reason = MethodType(RecorderApp._browser_delete_busy_reason, app)
+    app._selected_browser_entries = MethodType(RecorderApp._selected_browser_entries, app)
     thread = Mock()
     constructor = Mock(return_value=thread)
     monkeypatch.setattr(gui.threading, "Thread", constructor)

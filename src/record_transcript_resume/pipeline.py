@@ -1,13 +1,14 @@
 ﻿from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-import re
 import shutil
 import time
 
 from record_transcript_resume.errors import SynthesisError, TranscriptionError
+from record_transcript_resume.meeting_naming import is_meeting_folder, recording_time, rename_meeting, safe_name
+from record_transcript_resume.meeting_topics import save_metadata
 from record_transcript_resume.synthesis import DEFAULT_PROVIDER, DEFAULT_TEMPLATE, SummaryProvider, SummaryTemplate, SynthesisResult, generate
 from record_transcript_resume.transcription import Segment, assign_speakers, segments_to_markdown, transcribe
 
@@ -24,6 +25,11 @@ class PipelineResult:
     summary_path: Path | None
     warnings: tuple[str, ...] = ()
     summary_failed: bool = False
+    audio_seconds: float = 0.0
+    processing_seconds: float = 0.0
+    previous_folder: Path | None = None
+    content_name: str = ""
+    source_folder: Path | None = None
 
 
 def run(
@@ -41,6 +47,7 @@ def run(
     additional_instructions: str = "",
     preserve_source: bool = False,
     reuse_source_folder: bool = False,
+    defer_content_name: bool = False,
 ) -> PipelineResult:
     def _notify(msg: str) -> None:
         if callable(on_status):
@@ -60,6 +67,7 @@ def run(
                 "O arquivo original foi preservado."
             )
     date_str = datetime.now().strftime("%Y-%m-%d")
+    recorded_at = recording_time(mp3_path) or datetime.fromtimestamp(mp3_path.stat().st_mtime)
 
     # Step 1: transcription — if it fails, do not move the MP3
     _notify("Transcribing audio...")
@@ -119,10 +127,10 @@ def run(
             _notify(warnings[-1])
         log(f"Pipeline summary finished | elapsed={_elapsed(synthesis_started)}")
 
-    # A recording already in its own folder keeps that location throughout
-    # transcription and retries. Loose or imported media gets one result folder.
-    folder = mp3_path.parent if reuse_source_folder else _resolve_folder(
-        output_dir, synthesis.folder_name, date_str, mp3_path,
+    # Never rename a shared directory or overwrite another audio's documents.
+    reuse_meeting = reuse_source_folder and is_meeting_folder(mp3_path)
+    folder = mp3_path.parent if reuse_meeting else _resolve_folder(
+        output_dir, synthesis.folder_name if not summary_failed else "", date_str, mp3_path,
     )
     folder.mkdir(parents=True, exist_ok=True)
 
@@ -148,14 +156,59 @@ def run(
     if output_mode != "transcription":
         summary_path = folder / "summary.md"
         summary_path.write_text(synthesis.summary_md + "\n", encoding="utf-8")
+        if not summary_failed and synthesis.topic:
+            try:
+                from record_transcript_resume.meeting_topics import save_topic
+                save_topic(folder, synthesis.topic)
+            except OSError as exc:
+                warnings.append(f"Resumo salvo, mas a descrição curta não pôde ser salva: {exc}")
 
-    return PipelineResult(
+    # Save documents before renaming. A locked file must not turn successful
+    # transcription into a failed job or leave callers pointing at missing paths.
+    content_name = ""
+    try:
+        save_metadata(folder, recorded_at=recorded_at.isoformat(), audio_file=new_mp3.name)
+    except OSError as exc:
+        warnings.append(f"Não foi possível salvar a data original da gravação: {exc}")
+    else:
+        if not summary_failed and output_mode != "transcription" and safe_name(synthesis.folder_name):
+            content_name = safe_name(synthesis.folder_name)
+
+    result = PipelineResult(
         folder=folder,
         mp3_path=new_mp3,
         transcript_path=transcript_path,
         summary_path=summary_path,
         warnings=tuple(warnings),
         summary_failed=summary_failed,
+        content_name=content_name,
+        source_folder=mp3_path.parent if reuse_meeting else None,
+    )
+    return result if defer_content_name else finalize_content_name(result)
+
+
+def finalize_content_name(result: PipelineResult) -> PipelineResult:
+    """Apply a saved result's name. The GUI calls this after worker completion,
+    on the UI thread, so Cancel cannot kill the worker halfway through a rename.
+    Only directory entries are renamed; audio bytes are never decoded or copied.
+    """
+    if not result.content_name:
+        return result
+    named = rename_meeting(result.mp3_path, result.content_name)
+    folder = named.audio.parent
+    warnings = list(result.warnings)
+    if named.warning:
+        warnings.append(named.warning)
+    try:
+        save_metadata(folder, audio_file=named.audio.name)
+    except OSError as exc:
+        warnings.append(f"Nome aplicado, mas os metadados não puderam ser atualizados: {exc}")
+    return replace(
+        result, folder=folder, mp3_path=named.audio,
+        transcript_path=folder / result.transcript_path.name if result.transcript_path else None,
+        summary_path=folder / result.summary_path.name if result.summary_path else None,
+        previous_folder=named.moved_folder if named.moved_folder == result.source_folder else None,
+        warnings=tuple(warnings), content_name="", source_folder=None,
     )
 
 
@@ -196,6 +249,13 @@ def retry_summary(
 
     summary_path = transcript_path.with_name("summary.md")
     summary_path.write_text(synthesis.summary_md.rstrip() + "\n", encoding="utf-8")
+    if synthesis.topic:
+        try:
+            from record_transcript_resume.meeting_topics import save_topic
+            save_topic(summary_path.parent, synthesis.topic)
+        except OSError:
+            import logging
+            logging.getLogger(__name__).warning("Resumo salvo sem descrição curta", exc_info=True)
     return summary_path
 
 
@@ -222,8 +282,7 @@ def _resolve_folder(output_dir: Path, folder_name: str, date_str: str, mp3_path:
 
 def _safe_folder_name(value: str) -> str:
     """Return a portable folder name and never accept model-provided path syntax."""
-    normalized = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    return normalized[:60]
+    return safe_name(value)
 
 
 def _fallback_summary(provider: str, detail: str) -> str:

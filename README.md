@@ -18,7 +18,11 @@ Você não precisa instalar Python, abrir terminal ou criar uma conta técnica p
 
 O aplicativo é instalado só para o seu usuário, em `%LOCALAPPDATA%\Programs\Voice Notes`. Não exige conta de administrador, Python ou uma `.venv` no computador de destino.
 
-Quando houver uma nova versão publicada nas [Releases públicas de distribuição](https://github.com/VictorJurado18/voice-notes-releases/releases), o Voice Notes avisa em **Ajustes** › **Provider e API**. Você pode escolher **Atualizar agora** para baixar o instalador, verificar sua integridade, fechar o widget e iniciar a versão nova sem usar terminal.
+Quando houver uma nova versão publicada nas [Releases públicas de distribuição](https://github.com/VictorJurado18/voice-notes-releases/releases), o Voice Notes avisa em **Ajustes** › **Atualizações**. Você pode escolher **Atualizar agora** para baixar o instalador, verificar sua integridade, fechar o widget e iniciar a versão nova sem usar terminal.
+
+Após atualizar, **O que há de novo** aparece uma vez por versão, quando a janela normal estiver visível e o aplicativo estiver livre. Iniciar oculto ou gravar não consome o aviso: ele aguarda. Consulte os destaques novamente em **Ajustes** › **Atualizações** › **O que há de novo**. As informações acompanham o instalador e podem ser lidas sem internet. Na primeira instalação, o aviso automático não é exibido.
+
+A busca por atualizações ocorre automaticamente ao abrir e a cada **4 horas**, em segundo plano. Quando há uma versão nova, aparece um botão discreto **Atualizar** no topo; no modo compacto, uma seta **↑**. Ambos abrem **Ajustes** › **Atualizações**, sem iniciar a instalação. Se a consulta falhar, o app tenta novamente após **15 minutos** e mantém o aviso de uma atualização que já havia sido confirmada. **Verificar agora** continua disponível.
 
 > O Windows pode mostrar uma tela de proteção ao abrir um instalador ainda não reconhecido. Confira se o arquivo veio da fonte esperada antes de escolher qualquer opção para continuar.
 
@@ -308,6 +312,7 @@ Antes de distribuir uma versão nova:
 3. Gere o instalador e instale-o em uma conta Windows de teste, confirmando: inicialização pela bandeja, gravação, transcrição, resumo e abertura da Biblioteca.
 4. Antes do merge, aumente a versão em `pyproject.toml` e `installer/VoiceNotes.iss`. Após o merge na `main`, o GitHub Actions testa, gera e publica automaticamente `VoiceNotes-Setup-x.y.z.exe` no repositório público `VictorJurado18/voice-notes-releases`.
 5. Quando houver distribuição pública, publique também um checksum SHA-256 e considere assinar o instalador. Isso reduz alertas do Microsoft Defender SmartScreen e permite ao usuário verificar a origem do arquivo.
+6. Atualize `CURRENT_HIGHLIGHTS` em `src/record_transcript_resume/release_notes.py` com as novidades efetivamente incluídas nessa versão. O popup usa a versão do pacote, sem consultar a internet. Verifique uma atualização real e um segundo início: o aviso deve aparecer só no primeiro; confira também a reabertura pelo botão, a instalação nova e o início oculto.
 
 ### Estrutura do projeto
 

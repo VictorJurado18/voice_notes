@@ -148,5 +148,66 @@ def test_silent_loopback_stops_before_native_stream_is_closed(monkeypatch, tmp_p
     assert backend.thread_error is None
 
 
+def test_microphone_queue_is_bounded_and_overload_is_reported(monkeypatch, tmp_path: Path) -> None:
+    backend = WindowsAudioBackend(WindowsAudioBackendConfig(capture_system_audio=False))
+    raw = numpy.zeros((480, 2), dtype=numpy.float32).tobytes()
+    closed = []
+
+    class Stream:
+        def __init__(self, callback):
+            self.callback = callback
+        def start_stream(self):
+            for _ in range(2000):
+                self.callback(raw, 480, None, None)
+        def stop_stream(self):
+            pass
+        def close(self):
+            closed.append(True)
+
+    class PyAudio:
+        def open(self, **kwargs):
+            return Stream(kwargs["stream_callback"])
+        def terminate(self):
+            pass
+
+    class Encoder:
+        def encode(self, pcm):
+            backend._stop_event.set()
+            return b"encoded"
+        def flush(self):
+            return b"end"
+
+    monkeypatch.setitem(sys.modules, "pyaudiowpatch", SimpleNamespace(PyAudio=PyAudio, paFloat32=1, paContinue=0))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setattr(backend, "_build_encoder", lambda module:Encoder())
+    output = tmp_path / "capture.mp3"
+    backend._record_loop(output, object(), numpy, _DeviceSpec(1, "Synthetic microphone", 2, 48000), None)
+    assert backend._dropped_chunks == 1800
+    assert backend.capture_warning and closed
+    assert output.read_bytes().endswith(b"end")
+    assert backend.thread_error is None
+
+
+def test_recording_failure_stops_capture_producers(monkeypatch, tmp_path: Path) -> None:
+    backend = WindowsAudioBackend(WindowsAudioBackendConfig(capture_system_audio=False))
+    raw = numpy.zeros((4800, 2), dtype=numpy.float32).tobytes()
+    class Stream:
+        def __init__(self, callback): self.callback = callback
+        def start_stream(self): self.callback(raw, 4800, None, None)
+        def stop_stream(self): pass
+        def close(self): pass
+    class PyAudio:
+        def open(self, **kwargs): return Stream(kwargs["stream_callback"])
+        def terminate(self): pass
+    class Encoder:
+        def encode(self, pcm): raise MemoryError("synthetic failure")
+    monkeypatch.setitem(sys.modules, "pyaudiowpatch", SimpleNamespace(PyAudio=PyAudio, paFloat32=1, paContinue=0))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setattr(backend, "_build_encoder", lambda module:Encoder())
+    backend._record_loop(tmp_path / "capture.mp3", object(), numpy, _DeviceSpec(1, "Synthetic microphone", 2, 48000), None)
+    assert backend._stop_event.is_set()
+    assert "MemoryError" in backend.thread_error
+
+
 if __name__ == "__main__":
     unittest.main()

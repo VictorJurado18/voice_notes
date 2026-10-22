@@ -100,7 +100,7 @@ class PipelineTests(unittest.TestCase):
 
         self.assertEqual(result.folder.name, "test-meeting-2")
 
-    def test_process_recording_in_place_without_nesting_or_moving_audio(self) -> None:
+    def test_process_recording_renames_folder_and_audio_without_nesting(self) -> None:
         folder = Path(self.tmp) / "recording-20260521-120000"
         folder.mkdir()
         audio = folder / self.mp3.name
@@ -109,12 +109,13 @@ class PipelineTests(unittest.TestCase):
              patch("record_transcript_resume.pipeline.generate", return_value=_fake_synthesis()):
             result = run(audio, folder, reuse_source_folder=True)
 
-        self.assertEqual(result.folder, folder)
-        self.assertEqual(result.mp3_path, audio)
-        self.assertTrue(audio.is_file())
-        self.assertTrue((folder / "transcription.md").is_file())
-        self.assertTrue((folder / "summary.md").is_file())
-        self.assertFalse((folder / "test-meeting").exists())
+        self.assertEqual(result.folder, folder.with_name("test-meeting"))
+        self.assertEqual(result.mp3_path, result.folder / "test-meeting.mp3")
+        self.assertEqual(result.previous_folder, folder)
+        self.assertTrue(result.mp3_path.is_file())
+        self.assertTrue((result.folder / "transcription.md").is_file())
+        self.assertTrue((result.folder / "summary.md").is_file())
+        self.assertFalse(folder.exists())
 
     def test_fallback_folder_uses_audio_stem_once(self) -> None:
         with patch("record_transcript_resume.pipeline.transcribe", return_value=_fake_segments()), \

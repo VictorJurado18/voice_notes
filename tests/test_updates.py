@@ -9,11 +9,33 @@ from unittest.mock import patch
 from record_transcript_resume.updates import APP_VERSION, ApplicationUpdate, check_for_updates, start_downloaded_update
 
 
+def test_temporary_network_error_is_not_reported_as_no_available_update() -> None:
+    from urllib.error import URLError
+    with patch("record_transcript_resume.updates._latest_release_payload", side_effect=URLError("offline")):
+        result = check_for_updates()
+    assert not result.available and not result.check_succeeded
+
+
+def test_current_version_is_a_successful_check() -> None:
+    with patch("record_transcript_resume.updates._latest_release_payload", return_value=_release(APP_VERSION)):
+        result = check_for_updates()
+    assert not result.available and result.check_succeeded
+
+
 def test_installed_version_matches_project_metadata() -> None:
     contents = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
     expected = re.search(r'^version\s*=\s*"([^"]+)"', contents, re.MULTILINE)
     assert expected is not None
     assert APP_VERSION == expected.group(1)
+
+
+def test_silent_installer_leaves_restart_to_the_update_launcher() -> None:
+    setup = (Path(__file__).resolve().parents[1] / "installer" / "VoiceNotes.iss").read_text(encoding="utf-8")
+    run_section = setup.split("[Run]", 1)[1].split("[Code]", 1)[0]
+    app_launches = [line for line in run_section.splitlines()
+                    if line.startswith('Filename: "{app}\\{#MyAppExeName}"')]
+    assert len(app_launches) == 1
+    assert "postinstall skipifsilent" in app_launches[0]
 
 
 def _next_patch_version(version: str) -> str:

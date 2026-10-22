@@ -27,6 +27,8 @@ def terminate_process_tree(process: subprocess.Popen[object]) -> None:
             ["taskkill", "/PID", str(process.pid), "/T", "/F"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             **hidden_process_kwargs(),
         )

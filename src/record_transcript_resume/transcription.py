@@ -64,7 +64,9 @@ def transcribe(
     log(f"Transcription started | model={model_size} language={language} file={audio_path.name}")
 
     try:
-        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        from record_transcript_resume.resource_policy import transcription_threads
+        model = WhisperModel(model_size, device="cpu", compute_type="int8",
+                             cpu_threads=transcription_threads(), num_workers=1)
         # Meetings often contain long pauses. The library's conservative VAD
         # skips only silence longer than two seconds, preserving spoken content
         # and timestamps while avoiding needless CPU inference over silence.

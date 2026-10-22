@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from record_transcript_resume.errors import TranscriptionError
+from record_transcript_resume.resource_policy import transcription_threads
 from record_transcript_resume.transcription import Segment, assign_speakers, available_models, segments_to_markdown, transcribe
 
 
@@ -46,7 +47,9 @@ class TranscriptionTests(unittest.TestCase):
             transcribe(Path("fake.mp3"), language="pt", model_size="large-v3")
 
         fake_faster_whisper.WhisperModel.assert_called_once_with(
-            "large-v3", device="cpu", compute_type="int8"
+            "large-v3", device="cpu", compute_type="int8",
+            cpu_threads=transcription_threads(),
+            num_workers=1,
         )
 
     def test_transcribe_raises_on_import_error(self) -> None:

@@ -1,5 +1,5 @@
 #define MyAppName "Voice Notes"
-#define MyAppVersion "0.10.27"
+#define MyAppVersion "0.10.28"
 #define MyAppPublisher "Voice Notes"
 #define MyAppExeName "VoiceNotes.exe"
 
@@ -40,4 +40,29 @@ Name: "{userstartup}\Voice Notes"; Filename: "{app}\{#MyAppExeName}"; Parameters
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{tmp}\install_providers.ps1"" -ToolsRoot ""{localappdata}\Voice Notes\tools"""; StatusMsg: "Preparando providers de resumo..."; Tasks: providers; Flags: runhidden waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Description: "Abrir o widget Voice Notes"; Flags: nowait postinstall skipifsilent
-Filename: "{app}\{#MyAppExeName}"; Parameters: "--start-hidden"; Flags: nowait runhidden skipifnotsilent
+; Silent updates are restarted by start-update.cmd after Setup exits.
+; Starting another hidden instance here would open the application twice.
+
+[Code]
+var
+  PreviousAppVersion: String;
+
+function InitializeSetup: Boolean;
+begin
+  PreviousAppVersion := '';
+  RegQueryStringValue(HKCU64,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{B6E79191-B14A-49FD-B2D8-5A4642EC418C}_is1',
+    'DisplayVersion', PreviousAppVersion);
+  Result := True;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    RegWriteStringValue(HKCU64, 'Software\Voice Notes\InstallHistory',
+      'Version', '{#MyAppVersion}');
+    RegWriteStringValue(HKCU64, 'Software\Voice Notes\InstallHistory',
+      'PreviousVersion', PreviousAppVersion);
+  end;
+end;

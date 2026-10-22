@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Literal
 
 from record_transcript_resume.paths import app_data_dir
+from record_transcript_resume.meeting_topics import is_internal_metadata
+from record_transcript_resume.meeting_naming import recording_time
 
 
 MEDIA_SUFFIXES = frozenset({
@@ -97,6 +99,11 @@ class BrowserEntry:
     title: str
     detail: str
     modified_at: datetime
+    recorded_at: datetime | None = None
+
+    @property
+    def sort_at(self) -> datetime:
+        return self.recorded_at or self.modified_at
 
 
 def browse_directory(directory: Path, metadata_store: LibraryMetadataStore | None = None) -> list[BrowserEntry]:
@@ -108,6 +115,8 @@ def browse_directory(directory: Path, metadata_store: LibraryMetadataStore | Non
     metadata = (metadata_store or LibraryMetadataStore()).load()
     entries: list[BrowserEntry] = []
     for child in children:
+        if is_internal_metadata(child):
+            continue
         try:
             is_dir = child.is_dir()
             is_file = child.is_file()
@@ -121,7 +130,7 @@ def browse_directory(directory: Path, metadata_store: LibraryMetadataStore | Non
         media: Path | None = None
         if is_dir:
             try:
-                inside = list(child.iterdir())
+                inside = [path for path in child.iterdir() if not is_internal_metadata(path)]
             except OSError:
                 inside = []
             media = next((path for path in inside if path.is_file() and path.suffix.casefold() in MEDIA_SUFFIXES), None)
@@ -148,7 +157,10 @@ def browse_directory(directory: Path, metadata_store: LibraryMetadataStore | Non
             detail = child.suffix[1:].upper() if child.suffix else "Arquivo"
         user_data = metadata.get(_item_key(media or child), {})
         title = str(user_data.get("title") or _default_title(child.stem)) if isinstance(user_data, dict) and kind in {"recording", "text_record"} else child.name
-        entries.append(BrowserEntry(child, kind, title, detail, modified))
+        recorded = _recording_time(media or child)
+        if recorded is None and is_dir:
+            recorded = _recording_time(child)
+        entries.append(BrowserEntry(child, kind, title, detail, modified, recorded))
     return sorted(entries, key=lambda entry: (entry.title.casefold(), entry.path.name.casefold()))
 
 
@@ -316,15 +328,7 @@ def discover_recordings(output_dir: Path, metadata_store: LibraryMetadataStore |
 
 
 def _recording_time(media: Path | None) -> datetime | None:
-    if media is None:
-        return None
-    match = re.fullmatch(r"recording-(\d{8})-(\d{6})", media.stem, flags=re.IGNORECASE)
-    if match is None:
-        return None
-    try:
-        return datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S")
-    except ValueError:
-        return None
+    return recording_time(media) if media is not None else None
 
 
 def _title(summary_header: str, transcript_header: str, fallback: str) -> str:

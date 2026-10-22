@@ -30,12 +30,19 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"type": "status", "msg": msg}), flush=True)
 
     try:
+        import time
+        from record_transcript_resume.processing_metrics import media_duration
+        started = time.monotonic()
+        audio_seconds = media_duration(mp3_path)
+        if audio_seconds > 0:
+            print(json.dumps({"type": "metadata", "audio_seconds": audio_seconds}), flush=True)
         from record_transcript_resume.pipeline import run
         result = run(
             mp3_path, output_dir, language, model_size, provider, summary_template,
             on_status, diarize_speakers, os.environ.get("VOICE_NOTES_HF_TOKEN", ""),
             output_mode, transcription_provider, additional_instructions,
             preserve_source, reuse_source_folder,
+            defer_content_name=True,
         )
         print(json.dumps({
             "type": "done",
@@ -45,6 +52,11 @@ def main(argv: list[str] | None = None) -> int:
             "summary": str(result.summary_path) if result.summary_path else "",
             "warnings": list(result.warnings),
             "summary_failed": result.summary_failed,
+            "audio_seconds": audio_seconds,
+            "processing_seconds": time.monotonic() - started,
+            "previous_folder": str(result.previous_folder) if result.previous_folder else "",
+            "content_name": result.content_name,
+            "source_folder": str(result.source_folder) if result.source_folder else "",
         }), flush=True)
         return 0
     except Exception as exc:
