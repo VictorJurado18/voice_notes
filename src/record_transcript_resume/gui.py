@@ -148,7 +148,7 @@ _BUTTON_HELP: dict[str, str] = {
     "Falantes": "Configura a identificação de falantes.",
     "Verificar agora": "Executa esta verificação agora.",
     "Testar modelo selecionado": "Verifica se o modelo local de transcrição funciona.",
-    "Testar modelo": "Verifica se o modelo local de transcrição funciona.",
+    "Testar modelo": "Executa uma transcrição de teste e mostra se ela usou GPU ou CPU.",
     "Testar Codex": "Verifica se o Codex está instalado e responde neste computador.",
     "Testar Claude": "Verifica se o Claude está instalado e responde neste computador.",
     "Conectar conta no navegador": "Abre o navegador para conectar a conta do provedor.",

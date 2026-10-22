@@ -15,7 +15,7 @@ from record_transcript_resume.paths import app_data_dir
 # The version comes from bundled project metadata, as it does for the updater.
 CURRENT_HIGHLIGHTS = (
     ("Transcrição acelerada automaticamente",
-     "Em computadores com GPU NVIDIA compatível, o Whisper usa a GPU automaticamente. Se ela não estiver disponível ou falhar, o processamento continua na CPU. Use Testar modelo em Ajustes para conferir qual foi utilizada."),
+     "Você não precisa configurar nada. Se houver uma GPU NVIDIA compatível, o Whisper a usa automaticamente. Se a GPU não estiver disponível ou falhar, o app usa a CPU. Para conferir, vá em Ajustes → Diagnóstico → Teste do Whisper local e clique em Testar modelo. O resultado mostra se o teste usou GPU ou CPU."),
 )
 
 
