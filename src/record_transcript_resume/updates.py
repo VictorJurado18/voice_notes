@@ -46,6 +46,8 @@ def _installed_version() -> str:
 
 
 APP_VERSION = _installed_version()
+UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
+UPDATE_CHECK_RETRY_MS = 15 * 60 * 1000
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,7 @@ class ApplicationUpdate:
     download_url: str = ""
     sha256: str = ""
     installer_path: str = ""
+    check_succeeded: bool = True
 
 
 def _version_key(value: str) -> tuple[int, ...]:
@@ -102,16 +105,16 @@ def check_for_updates() -> ApplicationUpdate:
                     sha256 = digest.removeprefix("sha256:").lower()
                 break
         if not asset_url:
-            return ApplicationUpdate(False, "A versão publicada não possui o instalador VoiceNotes-Setup.")
+            return ApplicationUpdate(False, "A versão publicada não possui o instalador VoiceNotes-Setup.", check_succeeded=False)
         if _version_key(version) <= _version_key(APP_VERSION):
             return ApplicationUpdate(False, f"Voice Notes {APP_VERSION} já está atualizado.")
         return ApplicationUpdate(True, f"Nova versão disponível: {version}.", version, asset_url, sha256)
     except error.HTTPError as exc:
         if exc.code == 404:
-            return ApplicationUpdate(False, "Ainda não há uma Release publicada para verificar atualizações.")
-        return ApplicationUpdate(False, f"Não foi possível consultar atualizações (HTTP {exc.code}).")
+            return ApplicationUpdate(False, "Ainda não há uma Release publicada para verificar atualizações.", check_succeeded=False)
+        return ApplicationUpdate(False, f"Não foi possível consultar atualizações (HTTP {exc.code}).", check_succeeded=False)
     except (error.URLError, OSError, ValueError, json.JSONDecodeError):
-        return ApplicationUpdate(False, "Não foi possível consultar atualizações agora. Verifique sua conexão.")
+        return ApplicationUpdate(False, "Não foi possível consultar atualizações agora. Verifique sua conexão.", check_succeeded=False)
 
 
 def download_update(update: ApplicationUpdate) -> ApplicationUpdate:

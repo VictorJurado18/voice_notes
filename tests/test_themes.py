@@ -88,7 +88,8 @@ def test_background_update_result_keeps_the_primary_button_readable(name: str, m
 
     monkeypatch.setattr(gui, "_COLORS", theme_colors(name))
     app = SimpleNamespace(
-        _update_check_running=True, _available_update=None,
+        _update_check_running=True, _update_install_running=False, _available_update=None,
+        _schedule_update_check=Mock(), _sync_update_indicator=Mock(),
         update_hint=Mock(), update_check_button=Mock(), update_apply_button=Mock(),
     )
     gui.RecorderApp._on_update_checked(app, SimpleNamespace(available=False, message="Atualizado"))

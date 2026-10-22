@@ -5,19 +5,30 @@ import subprocess
 import threading
 import time
 import queue
+from dataclasses import replace
 import tkinter as tk
+import tkinter.font as tkfont
 import argparse
+import logging
 import os
 import re
 import sys
 from pathlib import Path
+from datetime import datetime, timezone
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Callable
 
 import customtkinter as ctk
+from record_transcript_resume.navigation_view import NavigationScrollFrame, RetainedPageDeck, frozen_paint
 
 from record_transcript_resume.errors import DiskSpaceError, RecordingError
 from record_transcript_resume.paths import default_output_dir
+from record_transcript_resume.meeting_topics import (
+    is_internal_metadata, load_topic, save_metadata, save_topic, summary_available,
+)
+from record_transcript_resume.meeting_naming import (
+    NameSource, load_name_source, plan_meeting_name, recording_time, safe_name, saved_meeting_audio,
+)
 from record_transcript_resume.preferences import (
     load_color_theme, load_library_directory, load_summary_provider,
     save_color_theme, save_library_directory, save_summary_provider,
@@ -29,9 +40,13 @@ from record_transcript_resume.themes import (
 from record_transcript_resume.recording import MIN_FREE_BYTES, RecordingConfig, RecordingService, RecordingState
 from record_transcript_resume.transcription import available_models
 from record_transcript_resume.windows_audio_backend import WindowsAudioBackend, WindowsAudioBackendConfig
-from record_transcript_resume.jobs import JobStore, ProcessingJob
+from record_transcript_resume.jobs import JobStore, ProcessingJob, QueueRequest
+from record_transcript_resume.processing_metrics import ProcessingMetricsStore, media_duration, profile_key
+from record_transcript_resume.resource_policy import (
+    memory_headroom, required_headroom, transcription_threads, worker_environment,
+)
 from record_transcript_resume.library import (
-    BrowserEntry, LibraryItem, LibraryMetadataStore, browse_directory, discover_recordings,
+    BrowserEntry, LibraryItem, LibraryMetadataStore, MEDIA_SUFFIXES, browse_directory, discover_recordings,
 )
 from record_transcript_resume.library_actions import (
     checked_delete_target, path_is_within, recycle_library_entry,
@@ -89,6 +104,10 @@ _PLAYER_PAUSE_ICON = "⏸"
 _PIX_KEY = "f608aca6-81f0-4c41-a77f-347777f75b0e"
 
 _BUTTON_HELP: dict[str, str] = {
+    "Limpar concluídos": "Remove da lista todos os processos concluídos com sucesso. Os áudios, transcrições e resumos permanecem nas pastas.",
+    "Pasta": "Abre a pasta de arquivos deste processo no Explorador do Windows.",
+    "Repetir": "Tenta processar novamente um áudio que falhou ou refaz somente o resumo quando ele ficou pendente.",
+    "Detalhes": "Mostra os detalhes do erro ou aviso deste processo.",
     "×": "Fecha a janela. Se houver uma tarefa ativa, o app continua na bandeja.",
     "Ocultar": "Esconde a janela; o app continua acessível pela bandeja do Windows.",
     "Minimizar": "Mostra o controle compacto de gravação.",
@@ -188,6 +207,8 @@ _BUTTON_HELP: dict[str, str] = {
     "Abrir pasta": "Abre a pasta selecionada no Explorador de Arquivos.",
     "Exportar DOCX": "Exporta o documento selecionado para Word (.docx).",
     "Exportar PDF": "Exporta o documento selecionado para PDF.",
+    "Abrir PDF": "Abre uma cópia temporária no leitor de PDF padrão. Use Salvar como no leitor para guardar uma cópia.",
+    "Gerar descrição curta": "Usa o resumo já salvo e a IA configurada para identificar o assunto. Pode consumir uso da conta; não transcreve o áudio novamente.",
     "DOCX": "Exporta o documento selecionado para Word (.docx).",
     "PDF": "Exporta o documento selecionado para PDF.",
     "Nomear falantes": "Atribui nomes aos falantes identificados na transcrição.",
@@ -401,6 +422,14 @@ class RecorderApp(ctk.CTk):
         self._content_scrollbar_after: str | None = None
         self._reachability_after: str | None = None
         self._window_repaint_after: str | None = None
+        self._page_theme_cache: dict[tuple[str, bool], str] = {}
+        self._page_presentations: dict[str, tuple[object, ...]] = {}
+        self._page_paint_cache: dict[tuple[object, ...], tuple[int, int]] = {}
+        self._page_scroll_positions: dict[tuple[str, str], float] = {}
+        self._navigation_serial = 0
+        self._shown_page_key: tuple[object, ...] | None = None
+        self._chrome_signature: tuple[object, ...] | None = None
+        self._typography_desktop: bool | None = None
         self.geometry(f"{self._preferred_widget_width}x{self._main_widget_height}")
         self.minsize(self._min_widget_width, self._min_widget_height)
         self.maxsize(self._preferred_widget_width, self._main_widget_height)
@@ -414,6 +443,18 @@ class RecorderApp(ctk.CTk):
         self._last_output: Path | None = None
         self._stop_thread: threading.Thread | None = None
         self._pipeline_thread: threading.Thread | None = None
+        self._processing_status_text = ""
+        self._recording_failure = ""
+        self._queue_retry_after: str | None = None
+        from record_transcript_resume.release_notes import ReleaseNoticeStore
+        self._release_notice_store = ReleaseNoticeStore(development=not getattr(sys, "frozen", False))
+        self._pending_release_notice = None
+        self._whats_new_dialog: ctk.CTkToplevel | None = None
+        self._whats_new_after: str | None = None
+        self._timing_store = ProcessingMetricsStore()
+        self._estimate_request = 0
+        self._estimate_audio_seconds = 0.0
+        self._duration_cache: dict[tuple[str, int, int], float] = {}
         self._youtube_download_thread: threading.Thread | None = None
         self._pipeline_process: object | None = None
         self._active_job_id: str | None = None
@@ -423,8 +464,17 @@ class RecorderApp(ctk.CTk):
         self._job_store = JobStore()
         self._library_metadata = LibraryMetadataStore()
         self._library_items: list[LibraryItem] = []
+        self._library_scan_generation = 0
+        self._library_scan_running = False
+        self._library_scan_requested = False
+        self._browser_snapshot_key: tuple[object, ...] | None = None
+        self._breadcrumb_directory: tuple[Path, Path] | None = None
         self._browser_directory: Path | None = None
         self._browser_delete_pending: Path | None = None
+        self._pdf_preview_running = False
+        self._topic_active_folder: Path | None = None
+        self._name_active_audio: Path | None = None
+        self._name_dialog: ctk.CTkToplevel | None = None
         self._summary_source_path: Path | None = None
         self._library_render_after: str | None = None
         self._library_render_signature: tuple[object, ...] | None = None
@@ -462,6 +512,9 @@ class RecorderApp(ctk.CTk):
         self._provider_setup_attempted = False
         self._provider_status_check_running = False
         self._update_check_running = False
+        self._update_check_after: str | None = None
+        self._update_install_running = False
+        self._update_helper_started = False
         self._ui_actions: queue.SimpleQueue[tuple[Callable[..., object], tuple[object, ...]]] = queue.SimpleQueue()
         self._pix_support_window: ctk.CTkToplevel | None = None
         self._tray = _TrayController(self)
@@ -505,6 +558,7 @@ class RecorderApp(ctk.CTk):
         self.file_diarize_speakers = tk.BooleanVar(value=False)
         self.file_output_mode = tk.StringVar(value="Transcrição e resumo")
         self._focus_file_path: Path | None = None
+        self._focus_file_paths: tuple[Path, ...] = ()
         self.youtube_url = tk.StringVar(value="")
         self.youtube_mode = tk.StringVar(value="Transcrição e resumo")
         self.youtube_hint = tk.StringVar(value="Use somente conteúdo próprio ou autorizado.")
@@ -544,7 +598,7 @@ class RecorderApp(ctk.CTk):
             value=_diarization_enabled_by_default(saved_huggingface_token),
         )
         self.provider_hint = tk.StringVar()
-        self.update_hint = tk.StringVar(value="Verifique se há uma nova versão do repositório.")
+        self.update_hint = tk.StringVar(value="O app verifica atualizações ao abrir e a cada 4 horas. Você também pode verificar agora.")
         self.device_info_text = tk.StringVar(value="")
         self.library_search = tk.StringVar(value="")
         self.library_filter = tk.StringVar(value="Todas")
@@ -576,11 +630,11 @@ class RecorderApp(ctk.CTk):
         self._eq_peaks: list[float] = [0.0] * 16
         self._eq_peak_hold: list[int] = [0] * 16
 
-        self._build_ui()
         self._button_tooltip_after: str | None = None
         self._button_tooltip_target: tk.Misc | None = None
         self._button_tooltip_popup: tk.Toplevel | None = None
         self._button_tooltip_label: tk.Label | None = None
+        self._build_ui()
         self._install_button_tooltips()
         self.output_dir.trace_add("write", self._on_output_directory_changed)
         self._bind_responsive_wraps(self)
@@ -589,6 +643,8 @@ class RecorderApp(ctk.CTk):
         self.transcription_source.trace_add("write", self._on_transcription_source_changed)
         self.processing_profile.trace_add("write", self._on_processing_profile_changed)
         self.recording_output_mode.trace_add("write", self._on_recording_output_mode_changed)
+        for variable in (self.pipeline_model, self.transcription_source, self.summary_provider, self.diarize_speakers):
+            variable.trace_add("write", self._refresh_selected_estimate)
         self._set_widget_mode(True)
         self.after_idle(self._schedule_widget_rounding)
         self._refresh_provider_hint()
@@ -606,6 +662,7 @@ class RecorderApp(ctk.CTk):
         self.bind("<Configure>", self._sync_window_controls, add="+")
         self.bind("<Configure>", self._schedule_window_reachability, add="+")
         self.bind("<Map>", self._schedule_window_reachability, add="+")
+        self.bind("<Map>", lambda event: self._schedule_release_notice() if event.widget is self else None, add="+")
         self.bind("<F11>", self._toggle_maximized, add="+")
         if enable_tray:
             self._tray_available = self._tray.start()
@@ -616,8 +673,9 @@ class RecorderApp(ctk.CTk):
         # The installer sets up both providers before starting the app. If that
         # step was interrupted, recover it in the background after first paint.
         self.after(700, self._check_provider_login)
-        self.after(1600, self._check_for_updates)
+        self._update_check_after = self.after(1600, self._poll_for_updates)
         self.after(1000, self._resume_interrupted_jobs)
+        self.after(1200, self._prepare_release_notice)
 
     def _post_to_ui(self, callback: Callable[..., object], *args: object) -> None:
         """Send a worker result to Tk without calling Tk from that worker."""
@@ -725,6 +783,13 @@ class RecorderApp(ctk.CTk):
             text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
         )
         self.maximize_button.pack(side=tk.RIGHT, padx=(4, 0))
+        self.update_available_button = ctk.CTkButton(
+            window_controls, text="Atualizar", command=self._show_update_settings,
+            width=82, height=28, corner_radius=8, border_width=1,
+            border_color=_COLORS["accent"], fg_color="transparent",
+            hover_color=_COLORS["surface_alt"], text_color=_COLORS["accent"],
+            font=("Segoe UI", 10, "bold"),
+        )
         workspace = ctk.CTkFrame(container, fg_color="transparent")
         workspace.pack(fill=tk.BOTH, expand=True)
         self._workspace = workspace
@@ -770,20 +835,19 @@ class RecorderApp(ctk.CTk):
         # forcing the borderless window beyond the visible work area.  The
         # header and navigation remain fixed, so switching destinations never
         # hides the window's lower rounded corners below the screen edge.
-        content = ctk.CTkScrollableFrame(
-            main_shell,
-            fg_color="transparent",
-            corner_radius=0,
-            scrollbar_fg_color="transparent",
-            scrollbar_button_color=_theme_color("#263550"),
-            scrollbar_button_hover_color=_theme_color("#34476B"),
+        self._page_deck = RetainedPageDeck(
+            main_shell, pages=("record", "file", "library", "processing", "youtube", "settings"),
+            color=_COLORS["bg"],
         )
-        content.pack(fill=tk.BOTH, expand=True, padx=2, pady=(0, 4))
-        content._parent_canvas.bind(
-            "<Configure>",
-            lambda _event: self._schedule_content_scrollbar(),
-            add="+",
-        )
+        self._page_deck.pack(fill=tk.BOTH, expand=True)
+        self._page_viewports = self._page_deck.viewports
+        for name, viewport in self._page_viewports.items():
+            viewport.configure(scrollbar_button_color=_theme_color("#263550"),
+                               scrollbar_button_hover_color=_theme_color("#34476B"))
+            viewport._parent_canvas.bind(
+                "<Configure>", lambda _event, page=name: self._page_viewport_changed(page), add="+",
+            )
+        content = self._page_viewports["record"]
 
         status_card = ctk.CTkFrame(
             content, fg_color=_COLORS["surface_alt"], corner_radius=12,
@@ -989,7 +1053,7 @@ class RecorderApp(ctk.CTk):
 
         # A janela estreita mantém as ações fixas durante a rolagem. Em telas
         # largas, as mesmas ações aparecem logo depois das opções de gravação.
-        self._buttons = ctk.CTkFrame(main_shell, fg_color="transparent")
+        self._buttons = ctk.CTkFrame(self._page_deck.shells["record"], fg_color="transparent")
         self._buttons.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=(0, 10))
         self.start_button = ctk.CTkButton(
             self._buttons, text="Iniciar gravação", command=self._start_recording,
@@ -1076,7 +1140,7 @@ class RecorderApp(ctk.CTk):
         # Configurações ocupam a mesma cápsula, preservando o cabeçalho e os
         # controles de janela para que a navegação nunca "desapareça".
         self._settings_panel = ctk.CTkFrame(
-            content, fg_color=_theme_color("#0C1423"), corner_radius=16,
+            self._page_viewports["settings"], fg_color=_theme_color("#0C1423"), corner_radius=16,
         )
         self._settings_kicker = ctk.CTkLabel(
             self._settings_panel, text="CONFIGURAÇÕES", font=("Segoe UI", 10, "bold"),
@@ -1084,39 +1148,48 @@ class RecorderApp(ctk.CTk):
         )
         self._settings_kicker.pack(fill=tk.X, padx=18, pady=(18, 2))
         self._settings_description = ctk.CTkLabel(
-            self._settings_panel, text="Preferências usadas na próxima gravação ou importação.",
+            self._settings_panel, text="Escolha o que deseja ajustar. Suas preferências valem para as próximas gravações.",
             font=("Segoe UI", 10), text_color=_COLORS["muted"], anchor="w",
         )
         self._settings_description.pack(fill=tk.X, padx=18, pady=(0, 8))
-        settings_nav = ctk.CTkFrame(self._settings_panel, fg_color=_theme_color("#111A2C"), corner_radius=9)
-        settings_nav.pack(fill=tk.X, padx=14, pady=(0, 10))
+        settings_nav = ctk.CTkFrame(self._settings_panel, fg_color="transparent", corner_radius=0)
+        settings_nav.pack(fill=tk.X, padx=18, pady=(6, 16))
         self._settings_navigation = settings_nav
         self._settings_section_buttons: dict[str, ctk.CTkButton] = {}
+        self._settings_tab_indicators: dict[str, ctk.CTkFrame] = {}
         settings_sections = [
-            ("verification", "Verificação"), ("provider", "Provider e API"),
-            ("profiles", "Resumos"), ("transcription", "Transcrição"), ("speakers", "Falantes"),
-            ("appearance", "Aparência"),
+            ("updates", "Atualizações", "Versão instalada, novidades e atualização do aplicativo."),
+            ("transcription", "Transcrição", "Idioma, modelo local e identificação de falantes."),
+            ("provider", "Resumos e IA", "Codex, Claude e providers por API para criar resumos."),
+            ("profiles", "Formatos", "Prompts e perfis de resumo salvos."),
+            ("appearance", "Aparência", "Escolha o tema de cores do aplicativo."),
+            ("verification", "Diagnóstico", "Verifique a instalação e teste áudio, Whisper e serviços de IA."),
         ]
-        for index, (section, label) in enumerate(settings_sections):
+        for index, (section, label, help_text) in enumerate(settings_sections):
             button = ctk.CTkButton(
                 settings_nav, text=label, command=lambda key=section: self._show_settings_section(key),
-                width=110, height=32, corner_radius=7, fg_color="transparent", hover_color=_theme_color("#22324F"),
-                text_color=_COLORS["muted"], font=("Segoe UI", 9, "bold"),
+                width=106, height=36, corner_radius=5, fg_color="transparent", hover_color=_theme_color("#22324F"),
+                text_color=_COLORS["muted"], font=("Segoe UI", 11, "bold"),
             )
-            button.grid(row=0, column=index, sticky="ew", padx=2, pady=2)
+            button._help_text = help_text
+            button.grid(row=0, column=index, sticky="ew", padx=0, pady=(0, 4))
             self._settings_section_buttons[section] = button
-            settings_nav.grid_columnconfigure(index, weight=1)
+            indicator = ctk.CTkFrame(settings_nav, height=2, corner_radius=0, fg_color="transparent")
+            indicator.grid(row=1, column=index, sticky="ew", padx=10)
+            self._settings_tab_indicators[section] = indicator
+            settings_nav.grid_columnconfigure(index, weight=0)
         self._settings_navigation_columns = len(settings_sections)
+        self._settings_tab_width = 0
         settings_nav.bind("<Configure>", lambda event: self._layout_settings_navigation(event.width), add="+")
         self._settings_sections = {
             key: ctk.CTkFrame(self._settings_panel, fg_color="transparent")
-            for key in ("verification", "provider", "profiles", "transcription", "speakers", "appearance")
+            for key in ("updates", "verification", "provider", "profiles", "transcription", "appearance")
         }
 
         def settings_card(parent: tk.Misc, title_text: str, detail: str) -> ctk.CTkFrame:
             card = ctk.CTkFrame(parent, fg_color=_theme_color("#111A2C"), corner_radius=12)
-            card.pack(fill=tk.X, padx=14, pady=(0, 12))
-            ctk.CTkLabel(card, text=title_text, font=("Segoe UI", 11, "bold"), text_color=_COLORS["text"], anchor="w").pack(fill=tk.X, padx=14, pady=(12, 0))
+            card.pack(fill=tk.X, padx=18, pady=(0, 16))
+            ctk.CTkLabel(card, text=title_text, font=("Segoe UI", 15, "bold"), text_color=_COLORS["text"], anchor="w").pack(fill=tk.X, padx=14, pady=(14, 0))
             ctk.CTkLabel(
                 card, text=detail, font=("Segoe UI", 10), text_color=_COLORS["muted"],
                 anchor="w", justify=tk.LEFT, wraplength=448,
@@ -1180,42 +1253,13 @@ class RecorderApp(ctk.CTk):
         )
         self.installation_check_button.pack(fill=tk.X, padx=14, pady=(5, 12))
 
-        model_card = settings_card(
-            verification, "Whisper local",
-            "O teste carrega o modelo selecionado e processa um áudio sintético. Na primeira vez, pode baixá-lo.",
-        )
-        ctk.CTkLabel(model_card, textvariable=self.local_transcription_test_status, anchor="w", text_color=_theme_color("#C9D3FF"), font=("Segoe UI", 9)).pack(fill=tk.X, padx=14, pady=(0, 5))
-        self.install_local_test_button = ctk.CTkButton(
-            model_card, text="Testar modelo selecionado", command=self._start_local_transcription_test,
-            height=32, corner_radius=8, fg_color=_theme_color("#244462"), hover_color=_theme_color("#315A80"),
-            text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
-        )
-        self.install_local_test_button.pack(fill=tk.X, padx=14, pady=(0, 12))
-
-        provider_test_card = settings_card(
-            verification, "Gerar resposta de teste",
-            "Cada botão envia apenas um texto sintético curto. Pode consumir uso da conta escolhida.",
-        )
-        self.install_provider_test_buttons: dict[str, ctk.CTkButton] = {}
-        for provider, label in (("codex", "Codex"), ("claude", "Claude")):
-            ctk.CTkLabel(provider_test_card, text=label, anchor="w", font=("Segoe UI", 9, "bold")).pack(fill=tk.X, padx=14, pady=(0, 2))
-            ctk.CTkLabel(provider_test_card, textvariable=self._provider_test_status[provider], anchor="w", text_color=_theme_color("#C9D3FF"), font=("Segoe UI", 9)).pack(fill=tk.X, padx=14, pady=(0, 3))
-            button = ctk.CTkButton(
-                provider_test_card, text=f"Testar {label}",
-                command=lambda selected=provider: self._start_provider_health_check(selected),
-                height=30, corner_radius=8, fg_color=_theme_color("#244462"), hover_color=_theme_color("#315A80"),
-                text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
-            )
-            button.pack(fill=tk.X, padx=14, pady=(0, 10))
-            self.install_provider_test_buttons[provider] = button
-
         processing_card = settings_card(self._settings_sections["provider"], "Resumo", "Escolha quem cria o resumo.")
         provider_row = ctk.CTkFrame(processing_card, fg_color="transparent")
         provider_row.pack(fill=tk.X, padx=14, pady=(0, 10))
         ctk.CTkLabel(
             provider_row, text="Provider do resumo", font=("Segoe UI", 10, "bold"),
             text_color=_COLORS["text"], anchor="w",
-        ).pack(side=tk.LEFT)
+        ).pack(side=tk.TOP, fill=tk.X, pady=(0, 5))
         self.provider_selector = ctk.CTkComboBox(
             provider_row, variable=self.summary_provider, values=self._summary_provider_options(),
             state="readonly", width=150, height=34, corner_radius=9,
@@ -1224,7 +1268,7 @@ class RecorderApp(ctk.CTk):
             dropdown_fg_color=_theme_color("#162136"), dropdown_text_color=_COLORS["text"],
             font=("Segoe UI", 10),
         )
-        self.provider_selector.pack(side=tk.RIGHT)
+        self.provider_selector.pack(fill=tk.X)
         ctk.CTkLabel(
             processing_card, textvariable=self.provider_hint, font=("Segoe UI", 9),
             text_color=_theme_color("#C9D3FF"), anchor="w", wraplength=470,
@@ -1305,7 +1349,7 @@ class RecorderApp(ctk.CTk):
         self._render_api_provider_list()
 
         provider_test_card = settings_card(
-            self._settings_sections["provider"], "Testar Codex e Claude",
+            self._settings_sections["verification"], "Testar Codex e Claude",
             "Cada teste envia um texto sintético curto ao provider e pode consumir uso da sua conta.",
         )
         for provider_code, provider_label in (("codex", "Codex"), ("claude", "Claude Code")):
@@ -1329,10 +1373,16 @@ class RecorderApp(ctk.CTk):
             )
             test_button.pack(side=tk.RIGHT)
             self._provider_test_buttons[provider_code] = test_button
+        self.install_provider_test_buttons = self._provider_test_buttons
 
         update_card = settings_card(
-            self._settings_sections["provider"], "Atualizações", "Confira a versão instalada e instale uma nova versão quando ela estiver disponível.",
+            self._settings_sections["updates"], "Atualizar o Voice Notes", "Confira a versão instalada e instale uma nova versão quando ela estiver disponível.",
         )
+        from record_transcript_resume.updates import APP_VERSION
+        ctk.CTkLabel(
+            update_card, text=f"Versão instalada · {APP_VERSION}", anchor="w",
+            font=("Segoe UI", 12, "bold"), text_color=_COLORS["text"],
+        ).pack(fill=tk.X, padx=14, pady=(0, 10))
         update_status = ctk.CTkFrame(
             update_card, fg_color=_theme_color("#0D1525"), corner_radius=8,
             border_width=1, border_color=_theme_color("#2A3A58"),
@@ -1360,9 +1410,16 @@ class RecorderApp(ctk.CTk):
             text_color=_COLORS["accent_text"], font=("Segoe UI", 10, "bold"),
         )
         self.update_check_button.pack(side=tk.RIGHT, padx=(0, 6))
+        self.whats_new_button = ctk.CTkButton(
+            update_card, text="O que há de novo", command=self._show_whats_new,
+            height=34, fg_color=_theme_color("#263550"), hover_color=_theme_color("#34476B"),
+            text_color=_COLORS["text"], font=("Segoe UI", 11),
+        )
+        self.whats_new_button._help_text = "Reabre as novidades da versão instalada do Voice Notes."
+        self.whats_new_button.pack(fill=tk.X, padx=14, pady=(0, 12))
 
         support_card = settings_card(
-            self._settings_sections["provider"], "Curtiu o Voice Notes?", "Se ele te salvou em uma reunião, aula ou ideia de última hora, um apoio ajuda a manter o projeto vivo.",
+            self._settings_sections["updates"], "Curtiu o Voice Notes?", "Se ele te salvou em uma reunião, aula ou ideia de última hora, um apoio ajuda a manter o projeto vivo.",
         )
         ctk.CTkButton(
             support_card, text="Apoiar o projeto", command=self._open_pix_support,
@@ -1428,7 +1485,7 @@ class RecorderApp(ctk.CTk):
             text_color=_COLORS["text"], dropdown_fg_color=_theme_color("#162136"), dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
         ).pack(fill=tk.X)
         local_test_card = settings_card(
-            self._settings_sections["transcription"], "Teste do Whisper local",
+            self._settings_sections["verification"], "Teste do Whisper local",
             "Carrega o modelo selecionado e processa um áudio de teste temporário. Na primeira vez, o modelo pode ser baixado; nenhum áudio seu é enviado.",
         )
         local_test_row = ctk.CTkFrame(local_test_card, fg_color="transparent")
@@ -1445,8 +1502,9 @@ class RecorderApp(ctk.CTk):
             text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
         )
         self.local_transcription_test_button.pack(side=tk.RIGHT)
+        self.install_local_test_button = self.local_transcription_test_button
 
-        speakers_card = settings_card(self._settings_sections["speakers"], "Falantes", "Opcional: identifica Pessoa 1, Pessoa 2 e assim por diante.")
+        speakers_card = settings_card(self._settings_sections["transcription"], "Identificação de falantes", "Opcional: identifica Pessoa 1, Pessoa 2 e assim por diante.")
         diarization_row = ctk.CTkFrame(speakers_card, fg_color="transparent")
         diarization_row.pack(fill=tk.X, padx=14, pady=(0, 12))
         ctk.CTkCheckBox(
@@ -1488,7 +1546,7 @@ class RecorderApp(ctk.CTk):
         ).pack(side=tk.RIGHT)
 
         self._file_panel = ctk.CTkFrame(
-            content, fg_color=_theme_color("#111A2C"), corner_radius=16,
+            self._page_viewports["file"], fg_color=_theme_color("#111A2C"), corner_radius=16,
             border_width=1, border_color=_theme_color("#253552"),
         )
         ctk.CTkLabel(
@@ -1516,6 +1574,16 @@ class RecorderApp(ctk.CTk):
                 text_color=_COLORS["muted"], anchor="w",
             ).pack(fill=tk.X, padx=12, pady=(0, 3))
 
+        file_setting_label("RESULTADO")
+        self.file_output_mode_selector = ctk.CTkComboBox(
+            file_settings, variable=self.file_output_mode,
+            values=["Transcrição e resumo", "Apenas transcrição"], state="readonly", height=32,
+            fg_color=_theme_color("#080C16"), border_color=_theme_color("#2A3A58"),
+            button_color=_theme_color("#263550"), button_hover_color=_theme_color("#34476B"),
+            text_color=_COLORS["text"], dropdown_fg_color=_theme_color("#162136"),
+            dropdown_text_color=_COLORS["text"], font=("Segoe UI", 10),
+        )
+        self.file_output_mode_selector.pack(fill=tk.X, padx=12, pady=(0, 8))
         file_setting_label("FONTE DA TRANSCRIÇÃO")
         self.file_transcription_source_selector = ctk.CTkComboBox(
             file_settings, variable=self.file_transcription_source,
@@ -1538,12 +1606,12 @@ class RecorderApp(ctk.CTk):
         self.file_language_selector.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.file_model_selector = ctk.CTkComboBox(
             file_transcription_row, variable=self.file_pipeline_model, values=self._available_models,
-            state="readonly", height=32, corner_radius=8, width=132, fg_color=_theme_color("#080C16"),
+            state="readonly", height=32, corner_radius=8, width=200, fg_color=_theme_color("#080C16"),
             border_color=_theme_color("#2A3A58"), button_color=_theme_color("#263550"), button_hover_color=_theme_color("#34476B"),
             text_color=_COLORS["text"], dropdown_fg_color=_theme_color("#162136"), dropdown_text_color=_COLORS["text"],
             font=("Segoe UI", 10),
         )
-        self.file_model_selector.pack(side=tk.LEFT, padx=(8, 0))
+        self.file_model_selector.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
         file_setting_label("PROVIDER DO RESUMO")
         self.file_summary_provider_selector = ctk.CTkComboBox(
             file_settings, variable=self.file_summary_provider, values=self._summary_provider_options(),
@@ -1570,7 +1638,7 @@ class RecorderApp(ctk.CTk):
             font=("Segoe UI", 9), text_color=_COLORS["muted"], anchor="w", wraplength=455,
         ).pack(fill=tk.X, padx=12, pady=(3, 10))
         self.process_button = ctk.CTkButton(
-            self._file_panel, text="Escolher áudio ou vídeo", command=self._process_existing_media,
+            self._file_panel, text="Escolher áudios ou vídeos", command=self._process_existing_media,
             height=42, corner_radius=10, fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"],
             text_color=_COLORS["accent_text"], font=("Segoe UI", 11, "bold"),
         )
@@ -1639,7 +1707,7 @@ class RecorderApp(ctk.CTk):
         # YouTube is a dedicated page. It deliberately does not share the
         # configuration page, because this is an action-specific workflow.
         self._youtube_panel = ctk.CTkFrame(
-            content, fg_color=_theme_color("#111A2C"), corner_radius=16,
+            self._page_viewports["youtube"], fg_color=_theme_color("#111A2C"), corner_radius=16,
             border_width=1, border_color=_theme_color("#253552"),
         )
         ctk.CTkLabel(self._youtube_panel, text="IMPORTAR DO YOUTUBE", font=("Segoe UI", 11, "bold"), text_color=_COLORS["text"], anchor="w").pack(fill=tk.X, padx=16, pady=(16, 1))
@@ -1683,7 +1751,7 @@ class RecorderApp(ctk.CTk):
         # Biblioteca local: permanece dentro do widget para não fragmentar a tarefa
         # entre janelas pequenas. Ela indexa as pastas já criadas pelo pipeline.
         self._library_panel = ctk.CTkFrame(
-            content, fg_color=_theme_color("#111A2C"), corner_radius=14,
+            self._page_viewports["library"], fg_color=_theme_color("#111A2C"), corner_radius=14,
             border_width=1, border_color=_theme_color("#2A3A58"),
         )
         library_header = ctk.CTkFrame(self._library_panel, fg_color="transparent")
@@ -2035,35 +2103,13 @@ class RecorderApp(ctk.CTk):
         )
         self.library_regenerate_button.pack(side=tk.RIGHT, padx=(0, 7))
 
-        self._processing_panel = ctk.CTkFrame(
-            content, fg_color=_theme_color("#111A2C"), corner_radius=14, border_width=1, border_color=_theme_color("#2A3A58"),
-        )
-        processing_header = ctk.CTkFrame(self._processing_panel, fg_color="transparent")
-        processing_header.pack(fill=tk.X, padx=14, pady=(12, 4))
-        ctk.CTkLabel(
-            processing_header, text="PROCESSAMENTOS", font=("Segoe UI", 10, "bold"),
-            text_color=_COLORS["text"], anchor="w",
-        ).pack(side=tk.LEFT)
-        ctk.CTkButton(
-            processing_header, text="Atualizar", command=self._refresh_processing_page, width=78, height=28,
-            corner_radius=8, fg_color=_theme_color("#263550"), hover_color=_theme_color("#34476B"), text_color=_COLORS["text"],
-            font=("Segoe UI", 9, "bold"),
-        ).pack(side=tk.RIGHT)
-        self.processing_overview = tk.StringVar(value="Nenhum processamento na fila")
-        ctk.CTkLabel(
-            self._processing_panel, textvariable=self.processing_overview, font=("Segoe UI", 10),
-            text_color=_COLORS["muted"], anchor="w", wraplength=500, justify=tk.LEFT,
-        ).pack(fill=tk.X, padx=14, pady=(0, 10))
-        self.processing_job_list = ctk.CTkFrame(self._processing_panel, fg_color=_theme_color("#0D1525"), corner_radius=10)
-        self.processing_job_list.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 12))
-
         # Barra de progresso do pipeline
         self.progressbar = ctk.CTkProgressBar(
-            content, height=4, corner_radius=2, fg_color=_theme_color("#1C2941"),
+            main_shell, height=4, corner_radius=2, fg_color=_theme_color("#1C2941"),
             progress_color=_COLORS["accent"], mode="indeterminate",
         )
         self.progressbar.set(0)
-        self._processing_actions = ctk.CTkFrame(content, fg_color="transparent")
+        self._processing_actions = ctk.CTkFrame(main_shell, fg_color="transparent")
         self.cancel_processing_button = ctk.CTkButton(
             self._processing_actions, text="Cancelar processamento", command=self._request_cancel_processing,
             height=32, corner_radius=8, fg_color=_theme_color("#3A2637"), hover_color=_theme_color("#573248"),
@@ -2077,11 +2123,11 @@ class RecorderApp(ctk.CTk):
         self.processing_feedback_label.pack(side=tk.LEFT)
 
         def desktop_context(
-            title: str, description: str, steps: tuple[tuple[str, str], ...],
+            page: str, title: str, description: str, steps: tuple[tuple[str, str], ...],
             action_text: str, action: Callable[[], None], height: int,
         ) -> ctk.CTkFrame:
             panel = ctk.CTkFrame(
-                content, width=410, height=height, fg_color=_theme_color("#141E32"),
+                self._page_viewports[page], width=410, height=height, fg_color=_theme_color("#141E32"),
                 corner_radius=14, border_width=1, border_color=_theme_color("#2A3A58"),
             )
             panel.pack_propagate(False)
@@ -2117,7 +2163,7 @@ class RecorderApp(ctk.CTk):
             return panel
 
         self._file_context_panel = desktop_context(
-            "Da importação ao resultado",
+            "file", "Da importação ao resultado",
             "O arquivo original continua no local escolhido.",
             (
                 ("Escolha o arquivo", "Aceita áudio ou vídeo já salvo no computador."),
@@ -2127,7 +2173,7 @@ class RecorderApp(ctk.CTk):
             "Ver Processos", self._show_processing_page, 730,
         )
         self._youtube_context_panel = desktop_context(
-            "Como funciona",
+            "youtube", "Como funciona",
             "Use o endereço de um vídeo que você pode processar.",
             (
                 ("Informe o link", "Cole a URL do vídeo no campo ao lado."),
@@ -2137,22 +2183,22 @@ class RecorderApp(ctk.CTk):
             "Ver Processos", self._show_processing_page, 610,
         )
         self._settings_context_panel = desktop_context(
-            "Configuração do app",
+            "settings", "Configuração do app",
             "Estas escolhas serão usadas nos próximos processamentos.",
             (
                 ("Verifique a instalação", "Confira áudio, modelo local e serviços conectados."),
                 ("Ajuste o processamento", "Escolha modelo, idioma, resumos e falantes."),
-                ("Teste antes de usar", "Os testes ficam em Verificação e Transcrição."),
+                ("Teste antes de usar", "Abra Diagnóstico para verificar a instalação, o Whisper, o Codex e o Claude."),
             ),
             "Ver Biblioteca", self._toggle_library, 650,
         )
 
-        self._build_focus_record(content)
-        self._build_focus_library(content)
-        self._build_focus_processes(content)
-        self._build_focus_file(content)
-        self._build_focus_youtube(content)
-        self._focus_settings_heading = ctk.CTkFrame(content, fg_color="transparent")
+        self._build_focus_record(self._page_viewports["record"])
+        self._build_focus_library(self._page_viewports["library"])
+        self._build_process_table(self._page_viewports["processing"])
+        self._build_focus_file(self._page_viewports["file"])
+        self._build_focus_youtube(self._page_viewports["youtube"])
+        self._focus_settings_heading = ctk.CTkFrame(self._page_viewports["settings"], fg_color="transparent")
         self._focus_page_heading(
             self._focus_settings_heading, "CONFIGURAÇÃO", "Ajustes",
             "Verifique a instalação e defina como o app trabalha.",
@@ -2189,6 +2235,11 @@ class RecorderApp(ctk.CTk):
             compact_main, width=86, height=28, bg=_theme_color("#101827"), highlightthickness=0, bd=0,
         )
         self._compact_meter.pack(side=tk.LEFT, padx=(10, 12))
+        self.compact_update_button = ctk.CTkButton(
+            compact_main, text="↑", command=self._show_update_settings,
+            width=26, height=28, fg_color="transparent", hover_color=_COLORS["surface_alt"],
+            text_color=_COLORS["accent"], font=("Segoe UI", 16, "bold"),
+        )
         self._compact_meter.bind("<Configure>", lambda _: self._redraw_eq())
         self.compact_start_button = ctk.CTkButton(
             compact_main, text="Iniciar", command=self._start_recording,
@@ -2255,6 +2306,9 @@ class RecorderApp(ctk.CTk):
         self._current_page = "record"
         self.device_info_text.trace_add("write", self._on_device_info_changed)
         self._sync_recording_result_fields()
+        for page in self._page_viewports:
+            self._layout_retained_page(page)
+        self._container = self._page_viewports["record"]
         self._show_page("record")
         self.after_idle(self._refresh_recording_recent)
 
@@ -2280,6 +2334,7 @@ class RecorderApp(ctk.CTk):
             copy, text=description, font=("Segoe UI", 11),
             text_color=_COLORS["muted"], anchor="w",
         ).pack(fill=tk.X, pady=(1, 0))
+        heading._voice_heading_parts = tuple(w for w in copy.winfo_children() if isinstance(w, ctk.CTkLabel))
         return heading
 
     def _build_focus_record(self, parent: ctk.CTkFrame) -> None:
@@ -2444,8 +2499,8 @@ class RecorderApp(ctk.CTk):
         )
         self._focus_stop_selector.pack(anchor=tk.W, padx=17, pady=(4, 16))
 
-        action = ctk.CTkFrame(panel, fg_color="transparent")
-        action.pack(fill=tk.X, pady=(1, 0))
+        action = ctk.CTkFrame(self._page_deck.shells["record"], fg_color="transparent")
+        self._focus_record_actions = action
         self._focus_start_button = ctk.CTkButton(
             action, text="Iniciar gravação", command=self._start_recording,
             width=176, height=39, corner_radius=7,
@@ -2489,7 +2544,7 @@ class RecorderApp(ctk.CTk):
         self._focus_record_hint.set({
             "audio": "Se salvar só o áudio, você poderá transcrevê-lo depois pela Biblioteca.",
             "transcription": "A transcrição começa automaticamente depois de salvar o áudio.",
-            "both": "A transcrição e o resumo começam depois de salvar o áudio.",
+            "both": "Após gerar o resumo, a pasta e o áudio recebem um nome baseado no assunto.",
         }.get(mode, ""))
         if mode == "both":
             if not self._focus_summary_preferences.winfo_manager():
@@ -2526,8 +2581,11 @@ class RecorderApp(ctk.CTk):
             panel, "SEUS ARQUIVOS", self._browser_heading_text,
             "Veja e organize o conteúdo das suas pastas no computador.",
         )
-        ctk.CTkButton(heading, text="Trocar pasta", command=self._choose_library_dir,
-                      width=115, height=35, fg_color=_theme_color("#263550")).pack(side=tk.RIGHT, pady=(17, 0))
+        heading.pack_configure(padx=16, pady=(16, 17))
+        self._browser_heading = heading
+        self._browser_choose_folder_button = ctk.CTkButton(heading, text="Trocar pasta", command=self._choose_library_dir,
+                      width=115, height=35, fg_color=_theme_color("#263550"))
+        self._browser_choose_folder_button.pack(side=tk.RIGHT, pady=(17, 0))
         self._focus_library_use_recording_button = ctk.CTkButton(
             heading, text="Pasta de Gravar", command=self._use_recording_library_dir,
             width=130, height=35, fg_color=_theme_color("#263550"),
@@ -2549,24 +2607,31 @@ class RecorderApp(ctk.CTk):
         self._browser_up_button.pack(side=tk.LEFT, padx=(0, 7))
         self._browser_breadcrumb = ctk.CTkFrame(location, fg_color=_theme_color("#111C30"), corner_radius=7, height=38)
         self._browser_search = tk.StringVar(value="")
-        search_box = ctk.CTkFrame(location, fg_color=_theme_color("#111C30"), corner_radius=7,
-                                  border_width=1, border_color=_theme_color("#33445F"))
-        search_box.pack(side=tk.RIGHT)
-        search_label = ctk.CTkLabel(
-            search_box, text="⌕  Buscar nesta pasta", font=("Segoe UI", 11),
-            text_color=_theme_color("#9FB0CC"),
-        )
-        search_label.pack(side=tk.LEFT, padx=(10, 5))
-        search_entry = ctk.CTkEntry(search_box, textvariable=self._browser_search,
-                     width=105, height=32,
+        search_entry = ctk.CTkEntry(location, placeholder_text="Buscar nesta pasta",
+                     width=230, height=38,
                      fg_color=_theme_color("#0B1528"), border_width=1, border_color=_theme_color("#4B5E7D"),
                      text_color=_COLORS["text"])
         self._browser_search_entry = search_entry
-        search_entry.pack(side=tk.LEFT, padx=(0, 3), pady=3)
-        search_label.bind("<Button-1>", lambda _event: search_entry.focus_set())
-        search_box.bind("<Button-1>", lambda _event: search_entry.focus_set())
+        search_entry.pack(side=tk.RIGHT)
+        # CTk's placeholder is unavailable when textvariable is supplied.
+        # Bridge edits and programmatic clears while retaining that prompt.
+        def edit_search(_event=None) -> None:
+            value = search_entry.get()
+            if value != self._browser_search.get():
+                self._browser_search.set(value)
+        search_entry.bind("<KeyRelease>", edit_search, add="+")
+        search_entry.bind("<FocusOut>", edit_search, add="+")
+        for sequence in ("<<Paste>>", "<<Cut>>"):
+            search_entry.bind(sequence, lambda _event: self.after_idle(edit_search), add="+")
         self._browser_breadcrumb.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-        self._browser_search.trace_add("write", lambda *_: self._render_focus_browser())
+        def search_changed(*_args) -> None:
+            value = self._browser_search.get()
+            if search_entry.get() != value:
+                search_entry.delete(0, tk.END)
+                if value:
+                    search_entry.insert(0, value)
+            self._render_focus_browser()
+        self._browser_search.trace_add("write", search_changed)
 
         toolbar = ctk.CTkFrame(panel, fg_color="transparent")
         toolbar.pack(fill=tk.X, padx=16, pady=(0, 8))
@@ -2587,7 +2652,7 @@ class RecorderApp(ctk.CTk):
             text_color=_COLORS["danger"],
         )
         self._browser_delete_button.pack(side=tk.LEFT, padx=(7, 0))
-        self._browser_sort = tk.StringVar(value="Nome A–Z")
+        self._browser_sort = tk.StringVar(value="Mais recentes")
         ctk.CTkOptionMenu(toolbar, variable=self._browser_sort,
                           values=["Nome A–Z", "Nome Z–A", "Mais recentes", "Mais antigos"],
                           command=lambda _choice: self._render_focus_browser(), width=150,
@@ -2599,11 +2664,36 @@ class RecorderApp(ctk.CTk):
         table_holder = ctk.CTkFrame(browser_area, fg_color=_theme_color("#0D1525"))
         self._browser_table_holder = table_holder
         table_holder.pack(fill=tk.BOTH, expand=True)
+        selection_bar = ctk.CTkFrame(table_holder, fg_color="transparent")
+        selection_bar.pack(fill=tk.X, pady=(0, 7))
+        self._browser_selection_button = ctk.CTkButton(
+            selection_bar, text="Selecionar vários", command=self._toggle_browser_multiselect,
+            width=130, height=28, fg_color=_COLORS["surface_button"], text_color=_COLORS["text"],
+        )
+        self._browser_selection_button.pack(side=tk.LEFT)
+        self._browser_selection_button._help_text = "Ativa ou encerra a seleção de vários itens nesta pasta. Também é possível usar Ctrl+clique ou Shift+clique."
+        self._browser_batch_button = ctk.CTkButton(
+            selection_bar, text="Adicionar à fila", command=self._browser_process_selection,
+            width=135, height=28, fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"],
+            text_color=_COLORS["accent_text"],
+        )
+        self._browser_clear_selection_button = ctk.CTkButton(
+            selection_bar, text="Limpar", command=self._clear_browser_selection,
+            width=65, height=28, fg_color="transparent", hover_color=_COLORS["surface_button"],
+            text_color=_COLORS["muted"],
+        )
+        self._browser_batch_button._help_text = "Revisa os áudios selecionados e adiciona todos à fila para processamento, um por vez."
+        self._browser_clear_selection_button._help_text = "Desmarca os itens selecionados. Nenhum arquivo é excluído."
+        self._browser_selection_hint = ctk.CTkLabel(
+            selection_bar, text="Ctrl+clique ou Shift+clique", anchor="w", font=("Segoe UI", 10),
+            text_color=_COLORS["muted"],
+        )
+        self._browser_selection_hint.pack(side=tk.LEFT, padx=10)
         table_heading = ctk.CTkFrame(table_holder, fg_color="transparent", height=34)
         table_heading.pack(fill=tk.X)
         table_heading.pack_propagate(False)
         self._browser_heading_labels = []
-        for text in ("Nome", "Tipo", "Conteúdo", "Modificado"):
+        for text in ("Nome", "Tipo", "Conteúdo", "Data"):
             label = ctk.CTkLabel(table_heading, text=text, font=("Segoe UI", 10),
                                  text_color=_theme_color("#9FB0CC"), anchor="w")
             self._browser_heading_labels.append(label)
@@ -2615,6 +2705,13 @@ class RecorderApp(ctk.CTk):
             highlightthickness=0, bd=0, cursor="hand2",
         )
         self._browser_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._browser_fonts = {
+            "title": tkfont.Font(root=self._browser_canvas, family="Segoe UI", size=11, weight="bold"),
+            "body": tkfont.Font(root=self._browser_canvas, family="Segoe UI", size=10),
+            "subtitle": tkfont.Font(root=self._browser_canvas, family="Segoe UI", size=9),
+        }
+        self._browser_clipped_cells: dict[tuple[int, int], str] = {}
+        self._browser_hover_cell: tuple[int, int] | None = None
         scrollbar = ctk.CTkScrollbar(
             canvas_holder, orientation="vertical", command=self._browser_canvas_scrollbar,
             width=9, fg_color=_theme_color("#0D1525"), button_color=_theme_color("#34445F"),
@@ -2627,9 +2724,16 @@ class RecorderApp(ctk.CTk):
         self._browser_canvas.bind("<MouseWheel>", self._browser_canvas_scroll)
         self._browser_canvas.bind("<Return>", self._browser_open)
         self._browser_canvas.bind("<Delete>", self._browser_delete)
+        self._browser_canvas.bind("<Control-a>", self._browser_select_all)
+        self._browser_canvas.bind("<Escape>", lambda _event: self._clear_browser_selection())
+        self._browser_canvas.bind("<Motion>", self._browser_canvas_hover)
+        self._browser_canvas.bind("<Leave>", self._browser_canvas_leave)
         self._browser_count = tk.StringVar(value="")
-        ctk.CTkLabel(table_holder, textvariable=self._browser_count, font=("Segoe UI", 10),
-                     text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, pady=(7, 3))
+        self._browser_count_label = ctk.CTkLabel(
+            table_holder, textvariable=self._browser_count, font=("Segoe UI", 10),
+            text_color=_COLORS["muted"], anchor="w",
+        )
+        self._browser_count_label.pack(side=tk.BOTTOM, fill=tk.X, pady=(7, 3), before=table_heading)
         self._browser_full_path = tk.StringVar(value="")
         preview = ctk.CTkFrame(browser_area, fg_color=_theme_color("#17213A"), corner_radius=9, height=108)
         self._browser_preview = preview
@@ -2645,6 +2749,26 @@ class RecorderApp(ctk.CTk):
             wraplength=600,
         )
         self._browser_preview_body_label.pack(fill=tk.X, padx=14)
+        self._browser_topic_label = ctk.CTkLabel(
+            preview, text="", font=("Segoe UI", 12), text_color=_COLORS["text"],
+            anchor="w", justify=tk.LEFT, wraplength=390,
+        )
+        self._browser_estimate = ctk.CTkLabel(
+            preview, text="", font=("Segoe UI", 11), text_color=_COLORS["muted"],
+            anchor="w", justify=tk.LEFT, wraplength=610,
+        )
+        self._browser_topic_button = ctk.CTkButton(
+            preview, text="Gerar descrição curta", command=self._browser_generate_topic,
+            height=30, width=185, fg_color=_theme_color("#263550"),
+        )
+        self._browser_name_button = ctk.CTkButton(
+            preview, text="Renomear com IA", command=self._browser_suggest_name,
+            height=30, width=185, fg_color=_theme_color("#263550"),
+        )
+        self._browser_name_button._help_text = (
+            "Sugere um nome para a pasta e o áudio usando o resumo ou a transcrição já salvos. "
+            "Você pode revisar o nome antes de aplicar."
+        )
         self._browser_preview_details = tk.StringVar(value="")
         self._browser_preview_details_label = ctk.CTkLabel(
             preview, textvariable=self._browser_preview_details,
@@ -2675,6 +2799,7 @@ class RecorderApp(ctk.CTk):
         self._browser_audio_tick: str | None = None
         self._browser_seek_after: str | None = None
         self._browser_slider_updating = False
+        self._browser_secondary_actions = ctk.CTkFrame(preview, fg_color="transparent")
         preview_actions = ctk.CTkFrame(preview, fg_color="transparent")
         preview_actions.pack(fill=tk.X, padx=14, pady=(2, 8))
         self._browser_open_button = ctk.CTkButton(
@@ -2685,120 +2810,49 @@ class RecorderApp(ctk.CTk):
             preview_actions, text="Processar áudio", command=self._browser_process_audio,
             width=140, height=30, fg_color=_theme_color("#263550"))
         self._browser_favorite_button = ctk.CTkButton(
-            preview_actions, text="☆ Favoritar", command=self._browser_toggle_favorite,
+            self._browser_secondary_actions, text="☆ Favoritar", command=self._browser_toggle_favorite,
             width=110, height=30, fg_color=_theme_color("#263550"))
         self._browser_metadata_button = ctk.CTkButton(
-            preview_actions, text="Título e etiquetas", command=self._browser_edit_metadata,
+            self._browser_secondary_actions, text="Título e etiquetas", command=self._browser_edit_metadata,
             width=145, height=30, fg_color=_theme_color("#263550"))
         self._browser_docx_button = ctk.CTkButton(
-            preview_actions, text="DOCX", command=lambda: self._browser_export_document("docx"),
-            width=62, height=30, fg_color=_theme_color("#263550"))
+            self._browser_secondary_actions, text="Exportar DOCX", command=lambda: self._browser_export_document("docx"),
+            width=110, height=30, fg_color=_theme_color("#263550"))
         self._browser_pdf_button = ctk.CTkButton(
-            preview_actions, text="PDF", command=lambda: self._browser_export_document("pdf"),
-            width=55, height=30, fg_color=_theme_color("#263550"))
-        ctk.CTkLabel(panel, textvariable=self._browser_full_path, font=("Segoe UI", 9),
-                     text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X, padx=16, pady=(0, 7))
+            preview_actions, text="Abrir PDF", command=self._browser_open_pdf,
+            width=92, height=30, fg_color=_theme_color("#263550"))
+        self._browser_full_path_label = ctk.CTkLabel(
+            panel, textvariable=self._browser_full_path, font=("Segoe UI", 9),
+            text_color=_COLORS["muted"], anchor="w",
+        )
+        self._browser_full_path_label.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=(0, 7), before=browser_area)
         self._browser_entries: list[BrowserEntry] = []
         self._browser_history: list[Path] = []
         self._browser_selected: BrowserEntry | None = None
+        self._browser_selected_paths: set[Path] = set()
+        self._browser_multiselect = False
+        self._browser_selection_anchor: Path | None = None
+        self._page_viewports["library"]._parent_canvas.bind(
+            "<Configure>", lambda _event: self.after_idle(self._fit_browser_panel), add="+",
+        )
+        self._page_viewports["processing"]._parent_canvas.bind(
+            "<Configure>", lambda _event: self.after_idle(self._fit_process_table), add="+",
+        )
 
-    def _build_focus_processes(self, parent: ctk.CTkFrame) -> None:
-        panel = ctk.CTkFrame(parent, fg_color=_theme_color("#0D1525"), corner_radius=0)
-        self._focus_process_panel = panel
-        heading = self._focus_page_heading(
-            panel, "TAREFAS", "Processos",
-            "Acompanhe, retome ou remova processos sem afetar os arquivos salvos.",
+    def _build_process_table(self, parent: ctk.CTkFrame) -> None:
+        from record_transcript_resume.processes_view import ProcessTable
+        self._process_table = ProcessTable(
+            parent, colors=_COLORS, color=_theme_color, action=self._process_table_action,
+            clear=self._clear_completed_processes, refresh=self._refresh_processing_page,
+            forecast=self._job_forecast,
+            can_cancel=lambda job: (job.id == self._active_job_id and job.status == "running"
+                                    and self._pipeline_process is not None and not self._processing_cancel_requested),
         )
-        ctk.CTkButton(heading, text="Atualizar", command=self._refresh_focus_processes,
-                      width=95, height=35, fg_color=_theme_color("#263550")).pack(side=tk.RIGHT, pady=(17, 0))
-        filters = ctk.CTkFrame(panel, fg_color="transparent")
-        filters.pack(fill=tk.X, padx=16, pady=(0, 9))
-        self._focus_process_filter = tk.StringVar(value="Todos")
-        self._focus_process_filter_buttons: dict[str, ctk.CTkButton] = {}
-        for label in ("Todos", "Em andamento", "Aguardando", "Exigem atenção", "Concluídos"):
-            button = ctk.CTkButton(
-                filters, text=label,
-                command=lambda selected=label: self._set_focus_process_filter(selected),
-                width=119, height=32, fg_color=_theme_color("#263550"), corner_radius=7,
-                font=("Segoe UI", 10),
-            )
-            button.pack(side=tk.LEFT, padx=(0, 5))
-            self._focus_process_filter_buttons[label] = button
-        self._focus_process_list = ctk.CTkScrollableFrame(
-            panel, fg_color="transparent", height=225,
-            scrollbar_button_color=_theme_color("#34445F"),
-        )
-        self._focus_process_list.pack(fill=tk.X, padx=16)
-        self._focus_selected_job_id: str | None = None
-        detail = ctk.CTkFrame(panel, fg_color=_theme_color("#17213A"), corner_radius=9)
-        detail.pack(fill=tk.X, padx=16, pady=(12, 5))
-        self._focus_process_title = tk.StringVar(value="Selecione um processo")
-        self._focus_process_detail = tk.StringVar(value="Os detalhes aparecerão aqui.")
-        self._focus_process_state = tk.StringVar(value="")
-        self._focus_process_stage = tk.StringVar(value="—")
-        self._focus_process_audio = tk.StringVar(value="—")
-        self._focus_process_when = tk.StringVar(value="—")
-        self._focus_process_error_summary = tk.StringVar(value="")
-        ctk.CTkLabel(detail, text="PROCESSO SELECIONADO", font=("Segoe UI", 10, "bold"),
-                     text_color=_theme_color("#B8ACFF"), anchor="w").pack(fill=tk.X, padx=14, pady=(12, 0))
-        title_line = ctk.CTkFrame(detail, fg_color="transparent")
-        title_line.pack(fill=tk.X, padx=14, pady=(3, 3))
-        ctk.CTkLabel(title_line, textvariable=self._focus_process_title,
-                     font=("Segoe UI", 15, "bold"),
-                     text_color=_COLORS["text"], anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ctk.CTkLabel(title_line, textvariable=self._focus_process_state,
-                     font=("Segoe UI", 10, "bold"),
-                     text_color=_theme_color("#B8ACFF")).pack(side=tk.RIGHT)
-        ctk.CTkLabel(detail, textvariable=self._focus_process_detail, font=("Segoe UI", 11),
-                     text_color=_COLORS["muted"], anchor="w", wraplength=630,
-                     justify=tk.LEFT).pack(fill=tk.X, padx=14, pady=(0, 9))
-        facts = ctk.CTkFrame(detail, fg_color="transparent")
-        facts.pack(fill=tk.X, padx=14, pady=(0, 10))
-        for index, (label, variable) in enumerate((
-            ("ETAPA", self._focus_process_stage),
-            ("ÁUDIO", self._focus_process_audio),
-            ("QUANDO", self._focus_process_when),
-        )):
-            facts.grid_columnconfigure(index, weight=1)
-            fact = ctk.CTkFrame(facts, fg_color=_theme_color("#111B2D"), corner_radius=7)
-            fact.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 5, 0))
-            ctk.CTkLabel(fact, text=label, font=("Segoe UI", 9, "bold"),
-                         text_color=_theme_color("#9FB0CC"), anchor="w").pack(fill=tk.X, padx=10, pady=(7, 0))
-            ctk.CTkLabel(fact, textvariable=variable, font=("Segoe UI", 10, "bold"),
-                         text_color=_COLORS["text"], anchor="w").pack(fill=tk.X, padx=10, pady=(1, 7))
-        self._focus_process_error_panel = ctk.CTkFrame(
-            detail, fg_color=_theme_color("#291F31"), corner_radius=7,
-            border_width=1, border_color=_theme_color("#72505A"),
-        )
-        ctk.CTkLabel(self._focus_process_error_panel, text="O que aconteceu",
-                     font=("Segoe UI", 10, "bold"), text_color=_theme_color("#FFB7AD"),
-                     anchor="w").pack(fill=tk.X, padx=11, pady=(8, 2))
-        ctk.CTkLabel(self._focus_process_error_panel,
-                     textvariable=self._focus_process_error_summary,
-                     font=("Segoe UI", 10), text_color=_theme_color("#E5CFD2"),
-                     anchor="w", justify=tk.LEFT, wraplength=610,
-                     ).pack(fill=tk.X, padx=11, pady=(0, 8))
-        actions = ctk.CTkFrame(detail, fg_color="transparent")
-        actions.pack(fill=tk.X, padx=14, pady=(0, 12))
-        self._focus_process_retry = ctk.CTkButton(actions, text="Tentar novamente",
-                                                   command=self._focus_retry_job, width=155,
-                                                   height=34, text_color=_COLORS['accent_text'], fg_color=_COLORS["accent"])
-        self._focus_process_retry.pack(side=tk.LEFT)
-        self._focus_process_open = ctk.CTkButton(actions, text="Abrir pasta",
-                                                  command=self._focus_open_job_folder, width=125,
-                                                  height=34, fg_color=_theme_color("#263550"))
-        self._focus_process_open.pack(side=tk.LEFT, padx=(8, 0))
-        self._focus_process_error = ctk.CTkButton(actions, text="Ver erro completo",
-                                                   command=self._focus_show_job_error, width=145,
-                                                   height=34, fg_color=_theme_color("#3A2637"))
-        self._focus_process_error.pack(side=tk.LEFT, padx=(8, 0))
-        self._focus_process_remove = ctk.CTkButton(actions, text="Remover da lista",
-                                                    command=self._focus_remove_job, width=145,
-                                                    height=34, fg_color=_theme_color("#3A2637"))
-        self._focus_process_remove.pack(side=tk.RIGHT)
-        ctk.CTkLabel(panel, text="Remover da lista não apaga o áudio nem os documentos salvos.",
-                     font=("Segoe UI", 10), text_color=_COLORS["muted"],
-                     anchor="w").pack(fill=tk.X, padx=18, pady=(0, 10))
+        self._focus_process_panel = self._process_table
+        self._processing_panel = self._process_table
+        self.processing_job_list = self._process_table.body
+        self._process_table.pack_propagate(False)
+
 
     def _build_focus_file(self, parent: ctk.CTkFrame) -> None:
         panel = ctk.CTkFrame(parent, fg_color="transparent")
@@ -2816,9 +2870,9 @@ class RecorderApp(ctk.CTk):
                      anchor="w", wraplength=800, justify=tk.LEFT).pack(fill=tk.X, padx=16, pady=(0, 10))
         first = ctk.CTkFrame(panel, fg_color=_theme_color("#17213A"), corner_radius=9)
         first.pack(fill=tk.X, pady=(0, 12))
-        ctk.CTkLabel(first, text="1  Escolher arquivo", font=("Segoe UI", 15, "bold"),
+        ctk.CTkLabel(first, text="1  Escolher arquivos", font=("Segoe UI", 15, "bold"),
                      text_color=_COLORS["text"], anchor="w").pack(fill=tk.X, padx=16, pady=(14, 3))
-        ctk.CTkLabel(first, text="Selecione o áudio ou vídeo que será processado.",
+        ctk.CTkLabel(first, text="Selecione um ou vários áudios e vídeos para processar em fila.",
                      font=("Segoe UI", 11), text_color=_COLORS["muted"],
                      anchor="w").pack(fill=tk.X, padx=16, pady=(0, 9))
         target = ctk.CTkFrame(first, fg_color=_theme_color("#101B2E"), corner_radius=8,
@@ -2831,13 +2885,13 @@ class RecorderApp(ctk.CTk):
         ctk.CTkLabel(target, text="MP3, WAV, M4A, MP4 e outros formatos aceitos",
                      font=("Segoe UI", 10), text_color=_COLORS["muted"],
                      anchor="w").pack(fill=tk.X, padx=14)
-        ctk.CTkButton(target, text="Escolher arquivo", command=self._focus_choose_file,
+        ctk.CTkButton(target, text="Escolher arquivos", command=self._focus_choose_file,
                       width=140, height=34, fg_color=_theme_color("#263550")).pack(anchor=tk.W, padx=14, pady=(10, 13))
         second = ctk.CTkFrame(panel, fg_color=_theme_color("#17213A"), corner_radius=9)
         second.pack(fill=tk.X, pady=(0, 12))
         ctk.CTkLabel(second, text="2  Configurar processamento", font=("Segoe UI", 15, "bold"),
                      text_color=_COLORS["text"], anchor="w").pack(fill=tk.X, padx=16, pady=(14, 3))
-        ctk.CTkLabel(second, text="Estas opções valem somente para este arquivo.",
+        ctk.CTkLabel(second, text="Estas opções serão usadas nos arquivos selecionados.",
                      font=("Segoe UI", 11), text_color=_COLORS["muted"],
                      anchor="w").pack(fill=tk.X, padx=16, pady=(0, 9))
         choices = (
@@ -2881,7 +2935,7 @@ class RecorderApp(ctk.CTk):
         advanced_button.pack(anchor=tk.W, padx=16, pady=(0, 12))
         actions = ctk.CTkFrame(panel, fg_color="transparent")
         actions.pack(fill=tk.X)
-        ctk.CTkButton(actions, text="Processar arquivo", command=self._focus_process_file,
+        ctk.CTkButton(actions, text="Processar seleção", command=self._focus_process_file,
                       width=200, height=40, text_color=_COLORS['accent_text'], fg_color=_COLORS["accent"]).pack(side=tk.LEFT)
         ctk.CTkButton(actions, text="Colar ou abrir transcrição", command=self._focus_show_text_tools,
                       width=210, height=40, fg_color=_theme_color("#263550")).pack(side=tk.LEFT, padx=(9, 0))
@@ -2925,17 +2979,23 @@ class RecorderApp(ctk.CTk):
         self._focus_text_tools_visible = False
 
     def _focus_choose_file(self) -> None:
-        chosen = filedialog.askopenfilename(
-            parent=self, title="Escolher áudio ou vídeo",
+        chosen = filedialog.askopenfilenames(
+            parent=self, title="Escolher áudios ou vídeos",
             filetypes=[("Áudio e vídeo", "*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.wma *.mp4 *.m4v *.mov *.mkv *.webm *.avi"),
                        ("Todos os arquivos", "*.*")],
             initialdir=self.output_dir.get() or str(Path.home()),
         )
         if chosen:
-            self._focus_file_path = Path(chosen)
-            self._focus_file_label.set(self._focus_file_path.name)
+            self._focus_file_paths = tuple(Path(path) for path in chosen)
+            self._focus_file_path = self._focus_file_paths[0]
+            self._focus_file_label.set(self._focus_file_path.name if len(chosen) == 1 else f"{len(chosen)} arquivos selecionados")
 
     def _focus_process_file(self) -> None:
+        paths = self._focus_file_paths or ((self._focus_file_path,) if self._focus_file_path else ())
+        if len(paths) > 1:
+            requests = [QueueRequest(path, Path(self.output_dir.get() or default_output_dir()), preserve_source=True) for path in paths]
+            self._open_batch_review(requests, self._batch_options(imported=True), on_added=self._clear_focus_file_choice)
+            return
         path = self._focus_file_path
         if path is None or not path.is_file():
             messagebox.showinfo("Escolha um arquivo", "Selecione um áudio ou vídeo para processar.", parent=self)
@@ -2950,9 +3010,13 @@ class RecorderApp(ctk.CTk):
             transcription_provider=self._transcription_provider_code_for_label(self.file_transcription_source.get()),
             separate_speakers=self.file_diarize_speakers.get(), preserve_source=True,
         ):
-            self._focus_file_path = None
-            self._focus_file_label.set("Nenhum arquivo escolhido")
+            self._clear_focus_file_choice()
             self._show_page("processing")
+
+    def _clear_focus_file_choice(self) -> None:
+        self._focus_file_paths = ()
+        self._focus_file_path = None
+        self._focus_file_label.set("Nenhum arquivo escolhido")
 
     def _focus_show_text_tools(self) -> None:
         self._focus_text_tools_visible = not self._focus_text_tools_visible
@@ -3246,7 +3310,7 @@ class RecorderApp(ctk.CTk):
             ctk.CTkButton(
                 row, text="Ver prompt", command=lambda current_label=label, current_template=template: self._show_profile_prompt(
                     _SUMMARY_TEMPLATE_CODES.get(current_template, "meeting"), current_label,
-                ), width=76, height=28, corner_radius=7, fg_color=_theme_color("#263550"), hover_color=_theme_color("#34476B"),
+                ), width=110, height=32, corner_radius=7, fg_color=_theme_color("#263550"), hover_color=_theme_color("#34476B"),
                 text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
             ).pack(side=tk.RIGHT)
 
@@ -3271,13 +3335,13 @@ class RecorderApp(ctk.CTk):
             ctk.CTkLabel(details, text=f"{template_label} · {profile.model_size} · {speaker_status}", font=("Segoe UI", 9), text_color=_COLORS["muted"], anchor="w").pack(fill=tk.X)
             ctk.CTkButton(
                 row, text="Editar", command=lambda profile_id=profile.id: self._edit_summary_profile(profile_id),
-                width=64, height=28, corner_radius=7, fg_color=_theme_color("#263550"), hover_color=_theme_color("#34476B"),
+                width=82, height=32, corner_radius=7, fg_color=_theme_color("#263550"), hover_color=_theme_color("#34476B"),
                 text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
             ).pack(side=tk.RIGHT)
             ctk.CTkButton(
                 row, text="Ver prompt", command=lambda profile_id=profile.id, profile_name=profile.name: self._show_profile_prompt(
                     f"custom:{profile_id}", f"Perfil salvo · {profile_name}",
-                ), width=76, height=28, corner_radius=7, fg_color=_theme_color("#263550"), hover_color=_theme_color("#34476B"),
+                ), width=110, height=32, corner_radius=7, fg_color=_theme_color("#263550"), hover_color=_theme_color("#34476B"),
                 text_color=_COLORS["text"], font=("Segoe UI", 9, "bold"),
             ).pack(side=tk.RIGHT, padx=(0, 6))
 
@@ -3708,6 +3772,9 @@ class RecorderApp(ctk.CTk):
             label.configure(text_color=_COLORS["danger"])
 
     def _start_local_transcription_test(self) -> None:
+        if self._capture_in_progress() or self._pipeline_thread is not None and self._pipeline_thread.is_alive():
+            messagebox.showinfo("Áudio em uso", "Aguarde a gravação ou o processamento terminar antes de carregar um modelo adicional para teste.", parent=self)
+            return
         if self._local_transcription_test_running:
             return
         model_size = self.pipeline_model.get()
@@ -3814,7 +3881,7 @@ class RecorderApp(ctk.CTk):
         hints = {
             "audio": "Áudio salvo sem iniciar transcrição ou resumo.",
             "transcription": "Áudio salvo e enviado apenas para transcrição.",
-            "both": "Áudio salvo, depois transcrição e resumo.",
+            "both": "Áudio salvo, depois transcrição e resumo. Ao concluir, pasta e áudio recebem o nome do assunto.",
         }
         self.recording_output_hint.set(hints.get(self.recording_output_mode.get(), hints["both"]))
         self._sync_recording_result_fields()
@@ -4082,24 +4149,200 @@ class RecorderApp(ctk.CTk):
         self.diarize_speakers.set(False)
         self.status.set("Token do Hugging Face salvo com segurança.")
 
+    def _prepare_release_notice(self) -> None:
+        from record_transcript_resume.updates import APP_VERSION
+        try:
+            self._pending_release_notice = self._release_notice_store.prepare(APP_VERSION)
+        except OSError as exc:
+            from record_transcript_resume.log import log_exception
+            log_exception("Não foi possível preparar as novidades da versão", exc)
+            return
+        self._schedule_release_notice()
+
+    def _schedule_release_notice(self) -> None:
+        notice = self._pending_release_notice
+        if notice is not None and notice.pending and self._whats_new_after is None:
+            self._whats_new_after = self.after(250, self._maybe_show_release_notice)
+
+    def _maybe_show_release_notice(self) -> None:
+        self._whats_new_after = None
+        notice = self._pending_release_notice
+        if notice is None or not notice.pending:
+            return
+        if not self.winfo_viewable() or self._compact_mode or self.state() == "iconic":
+            # Restoring the normal window schedules another attempt. A hidden
+            # launch must never consume the one-time announcement.
+            return
+        if self._active_work_description() is not None or self.grab_current() is not None:
+            self._whats_new_after = self.after(5000, self._maybe_show_release_notice)
+            return
+        try:
+            if self._release_notice_store.has_seen(notice.version):
+                self._pending_release_notice = None
+                return
+        except OSError:
+            return
+        self._show_whats_new()
+
+    def _show_whats_new(self) -> None:
+        """Open offline highlights; acknowledge only when the window is mapped."""
+        from record_transcript_resume.release_notes import CURRENT_HIGHLIGHTS
+        from record_transcript_resume.updates import APP_VERSION
+        if self._whats_new_dialog is not None and self._whats_new_dialog.winfo_exists():
+            self._whats_new_dialog.lift()
+            return
+        dialog = ctk.CTkToplevel(self)
+        dialog.withdraw()
+        self._whats_new_dialog = dialog
+        dialog.title("O que há de novo — Voice Notes")
+        dialog.configure(fg_color=_COLORS["bg"])
+        self._fit_dialog(dialog, 640, 700, 440, 400)
+        header = ctk.CTkFrame(dialog, fg_color="transparent")
+        header.pack(fill=tk.X, padx=24, pady=(22, 16))
+        ctk.CTkLabel(header, text=f"VOICE NOTES · VERSÃO {APP_VERSION}", anchor="w",
+                     font=("Segoe UI", 10, "bold"), text_color=_COLORS["accent"]).pack(fill=tk.X)
+        ctk.CTkLabel(header, text="O que há de novo", anchor="w",
+                     font=("Segoe UI", 24, "bold"), text_color=_COLORS["text"]).pack(fill=tk.X, pady=(4, 5))
+        notice = self._pending_release_notice
+        description = (
+            f"Atualizado de {notice.previous_version} para {APP_VERSION}. Veja os destaques."
+            if notice is not None and notice.previous_version else "Confira os destaques desta versão."
+        )
+        ctk.CTkLabel(header, text=description, anchor="w", justify=tk.LEFT, wraplength=550,
+                     font=("Segoe UI", 12), text_color=_COLORS["muted"]).pack(fill=tk.X)
+        footer = ctk.CTkFrame(dialog, fg_color="transparent")
+        footer.pack(side=tk.BOTTOM, fill=tk.X, padx=24, pady=(12, 20))
+        ctk.CTkLabel(footer, text="Reveja quando quiser em Ajustes → Atualizações.",
+                     anchor="w", justify=tk.LEFT, wraplength=350,
+                     font=("Segoe UI", 11), text_color=_COLORS["muted"]).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        close_button = ctk.CTkButton(footer, text="Entendido", width=112, height=36,
+                                     command=self._close_whats_new, fg_color=_COLORS["accent"],
+                                     hover_color=_COLORS["accent_hover"], text_color=_COLORS["accent_text"])
+        close_button._help_text = "Fecha as novidades. Este aviso não voltará a abrir sozinho nesta versão."
+        close_button.pack(side=tk.RIGHT, padx=(12, 0))
+        body = NavigationScrollFrame(dialog, fg_color="transparent", corner_radius=0)
+        body.pack(fill=tk.BOTH, expand=True, padx=18)
+        labels = []
+        for heading, detail in CURRENT_HIGHLIGHTS:
+            card = ctk.CTkFrame(body, fg_color=_COLORS["surface_alt"], corner_radius=10)
+            card.pack(fill=tk.X, padx=4, pady=(0, 10))
+            title_label = ctk.CTkLabel(card, text=heading, anchor="w", justify=tk.LEFT,
+                                       font=("Segoe UI", 13, "bold"), text_color=_COLORS["text"], wraplength=510)
+            title_label.pack(fill=tk.X, padx=16, pady=(13, 4))
+            detail_label = ctk.CTkLabel(card, text=detail, anchor="w", justify=tk.LEFT,
+                                        font=("Segoe UI", 12), text_color=_COLORS["muted"], wraplength=510)
+            detail_label.pack(fill=tk.X, padx=16, pady=(0, 13))
+            labels.extend((title_label, detail_label))
+        def fit_text(event) -> None:
+            width = max(180, event.width - 44)
+            for label in labels:
+                if int(label.cget("wraplength")) != width:
+                    label.configure(wraplength=width)
+        body.bind("<Configure>", fit_text, add="+")
+        def mark_mapped(event) -> None:
+            if event.widget is not dialog:
+                return
+            self._pending_release_notice = None
+            try:
+                self._release_notice_store.mark_seen(APP_VERSION)
+            except OSError as exc:
+                from record_transcript_resume.log import log_exception
+                log_exception("Não foi possível registrar a leitura das novidades", exc)
+        dialog.bind("<Map>", mark_mapped, add="+")
+        dialog.protocol("WM_DELETE_WINDOW", self._close_whats_new)
+        dialog.bind("<Escape>", lambda _event: self._close_whats_new())
+        def reveal() -> None:
+            if dialog.winfo_exists():
+                dialog.deiconify()
+                dialog.lift()
+                dialog.grab_set()
+                close_button.focus_set()
+        dialog.after_idle(reveal)
+
+    def _close_whats_new(self) -> None:
+        dialog = self._whats_new_dialog
+        self._whats_new_dialog = None
+        if dialog is not None and dialog.winfo_exists():
+            dialog.grab_release()
+            dialog.destroy()
+
     def _check_for_updates(self) -> None:
-        if self._update_check_running:
+        if self._update_check_running or self._update_install_running:
             return
         self._update_check_running = True
         self.update_check_button.configure(state=tk.DISABLED, text="Verificando…")
-        threading.Thread(target=self._update_check_worker, daemon=True).start()
+        try:
+            threading.Thread(target=self._update_check_worker, name="update-check", daemon=True).start()
+        except RuntimeError as exc:
+            from record_transcript_resume.updates import ApplicationUpdate
+            self._on_update_checked(ApplicationUpdate(False, f"Não foi possível iniciar a verificação: {exc}", check_succeeded=False))
+
+    def _schedule_update_check(self, delay: int) -> None:
+        if self._update_check_after is not None:
+            self.after_cancel(self._update_check_after)
+        self._update_check_after = self.after(delay, self._poll_for_updates)
+
+    def _poll_for_updates(self) -> None:
+        from record_transcript_resume.updates import UPDATE_CHECK_INTERVAL_MS
+        self._update_check_after = None
+        self._schedule_update_check(UPDATE_CHECK_INTERVAL_MS)
+        self._check_for_updates()
+
+    def _show_update_settings(self) -> None:
+        if self._compact_mode:
+            self._restore_full_widget()
+        self._page_scroll_positions[("settings", "updates")] = 0.0
+        self._show_page("settings")
+        self._show_settings_section("updates")
+        serial = self._navigation_serial
+        def scroll_to_update() -> None:
+            if serial == self._navigation_serial and self._current_page == "settings":
+                self._container._parent_canvas.yview_moveto(0)
+        self.after_idle(scroll_to_update)
+
+    def _sync_update_indicator(self) -> None:
+        update = getattr(self, "_available_update", None)
+        visible = update is not None and bool(getattr(update, "available", False))
+        for button in (self.update_available_button, self.compact_update_button):
+            if visible:
+                version = getattr(update, "version", "")
+                button._help_text = f"Versão {version} disponível. Abra Atualizações para instalar."
+                self._retheme_widget_tree(button)
+            else:
+                button.pack_forget()
+        if visible:
+            if not self.update_available_button.winfo_manager():
+                self.update_available_button.pack(side=tk.RIGHT, padx=(0, 8), pady=2)
+            if not self.compact_update_button.winfo_manager():
+                self.compact_update_button.pack(side=tk.LEFT, padx=(6, 0), before=self._compact_meter)
 
     def _update_check_worker(self) -> None:
-        from record_transcript_resume.updates import check_for_updates
-
-        result = check_for_updates()
+        from record_transcript_resume.updates import ApplicationUpdate, check_for_updates
+        try:
+            result = check_for_updates()
+        except Exception as exc:
+            from record_transcript_resume.log import log_exception
+            log_exception("Falha na verificação automática de atualização", exc)
+            result = ApplicationUpdate(False, "Não foi possível verificar atualizações agora.", check_succeeded=False)
         self._post_to_ui(self._on_update_checked, result)
 
     def _on_update_checked(self, result: object) -> None:
         self._update_check_running = False
-        self._available_update = result
-        self.update_hint.set(str(getattr(result, "message", "Não foi possível verificar atualizações.")))
-        available = bool(getattr(result, "available", False))
+        if self._update_install_running:
+            return
+        from record_transcript_resume.updates import UPDATE_CHECK_INTERVAL_MS, UPDATE_CHECK_RETRY_MS
+        succeeded = bool(getattr(result, "check_succeeded", True))
+        # A temporary outage cannot erase a previously confirmed update.
+        if succeeded or bool(getattr(result, "available", False)):
+            self._available_update = result
+        update = getattr(self, "_available_update", None)
+        available = bool(getattr(update, "available", False))
+        message = str(getattr(result, "message", "Não foi possível verificar atualizações."))
+        if not succeeded and available:
+            message = f"Versão {getattr(update, 'version', '')} disponível. {message} Tentaremos novamente automaticamente."
+        self.update_hint.set(message)
+        self._schedule_update_check(UPDATE_CHECK_INTERVAL_MS if succeeded else UPDATE_CHECK_RETRY_MS)
+        self._sync_update_indicator()
         self.update_check_button.configure(
             state=tk.NORMAL, text="Verificar agora",
             fg_color=_theme_color("#263550") if available else _COLORS["accent"],
@@ -4114,6 +4357,10 @@ class RecorderApp(ctk.CTk):
         )
 
     def _apply_update(self) -> None:
+        if self._update_install_running:
+            if self._update_helper_started:
+                self._close_for_update()
+            return
         update = getattr(self, "_available_update", None)
         if update is None or not getattr(update, "available", False):
             return
@@ -4128,24 +4375,40 @@ class RecorderApp(ctk.CTk):
             return
         self.update_apply_button.configure(state=tk.DISABLED, text="Atualizando…")
         self.update_check_button.configure(state=tk.DISABLED)
-        threading.Thread(target=self._apply_update_worker, args=(update,), daemon=True).start()
+        self._update_install_running = True
+        try:
+            threading.Thread(target=self._apply_update_worker, args=(update,), daemon=True).start()
+        except RuntimeError:
+            from record_transcript_resume.updates import ApplicationUpdate
+            self._on_update_applied(ApplicationUpdate(False, "Não foi possível iniciar o download da atualização."))
 
     def _apply_update_worker(self, update: object) -> None:
-        from record_transcript_resume.updates import download_update
-
-        result = download_update(update)
+        from record_transcript_resume.updates import ApplicationUpdate, download_update
+        try:
+            result = download_update(update)
+        except Exception as exc:
+            from record_transcript_resume.log import log_exception
+            log_exception("Falha no download da atualização", exc)
+            result = ApplicationUpdate(False, "Não foi possível baixar a atualização agora.")
         self._post_to_ui(self._on_update_applied, result)
 
     def _on_update_applied(self, result: object) -> None:
+        self._update_install_running = False
         self.update_hint.set(str(getattr(result, "message", "Não foi possível atualizar.")))
         self.update_apply_button.configure(text="Atualizar agora")
         self.update_check_button.configure(state=tk.NORMAL)
         if getattr(result, "available", False):
+            if self._active_work_description() is not None:
+                self.update_hint.set("Atualização baixada. Conclua a atividade em andamento e tente atualizar novamente.")
+                self.update_apply_button.configure(state=tk.NORMAL)
+                return
             from record_transcript_resume.updates import start_downloaded_update
 
             launch_result = start_downloaded_update(result)
             self.update_hint.set(str(getattr(launch_result, "message", "Não foi possível iniciar a atualização.")))
             if getattr(launch_result, "available", False):
+                self._update_install_running = True
+                self._update_helper_started = True
                 self.after(150, self._close_for_update)
                 return
             self.update_apply_button.configure(state=tk.NORMAL)
@@ -4155,8 +4418,8 @@ class RecorderApp(ctk.CTk):
     def _close_for_update(self) -> None:
         """Exit fully so the installer can replace the executable safely."""
         if self._active_work_description() is not None:
-            self.update_hint.set("A atualização foi preparada, mas há uma atividade em andamento.")
-            self.update_apply_button.configure(state=tk.NORMAL)
+            self.update_hint.set("A atualização está preparada. Conclua a atividade em andamento e clique em Concluir atualização.")
+            self.update_apply_button.configure(state=tk.NORMAL, text="Concluir atualização")
             return
         self._tray.stop()
         self.destroy()
@@ -4477,24 +4740,40 @@ class RecorderApp(ctk.CTk):
         self.update_idletasks()
         self._retheme_widget_tree(self, visible_only=True, force=True)
         self.update_idletasks()
-        try:
-            import ctypes
+        self._invalidate_native_content()
 
-            user32 = ctypes.WinDLL("user32", use_last_error=True)
-            user32.GetParent.argtypes = (ctypes.c_void_p,)
-            user32.GetParent.restype = ctypes.c_void_p
-            user32.RedrawWindow.argtypes = (
-                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint,
-            )
-            user32.RedrawWindow.restype = ctypes.c_int
-            child = self.winfo_id()
-            wrapper = user32.GetParent(child) or child
-            # Invalidate and erase all native children, then paint immediately.
-            # SetWindowPos can otherwise leave copied focus-mode pixels until
-            # Windows delivers its next deferred WM_PAINT messages.
-            user32.RedrawWindow(wrapper, None, None, 0x0185)
-        except (AttributeError, OSError, tk.TclError):
+    def _invalidate_native_content(self) -> None:
+        """Ask Tk's drawing owners to repaint after a canvas move.
+
+        Windows RedrawWindow can erase a child while Tk still considers its
+        text current. Reapplying a native drawing surface's own background
+        schedules its full Tk redraw without rebuilding controls or styles.
+        """
+        if (sys.platform != "win32" or not self.winfo_exists()
+                or getattr(self, "_native_repaint_running", False)):
+            return
+        self._native_repaint_running = True
+        try:
+            # Finish scroll-region/geometry idles before exposing the final
+            # child rectangles. Otherwise a pending canvas move can copy old
+            # pixels over freshly painted text on long settings sections.
+            self.update_idletasks()
+            pending: list[tk.Misc] = [self]
+            while pending:
+                widget = pending.pop()
+                if not widget.winfo_ismapped():
+                    continue
+                if isinstance(widget, (tk.Label, tk.Canvas)):
+                    widget.configure(background=widget.cget("background"))
+                # CTkFrame deliberately hides its backing canvas from its
+                # public winfo_children(). Include native drawing children,
+                # back to front, so both shapes and text are repainted.
+                pending.extend(reversed(tk.Misc.winfo_children(widget)))
+            self.update_idletasks()
+        except tk.TclError:
             pass
+        finally:
+            self._native_repaint_running = False
 
     def _sync_window_controls(self, event: tk.Event[tk.Misc]) -> None:
         if event.widget is not self or self._compact_mode:
@@ -4512,6 +4791,10 @@ class RecorderApp(ctk.CTk):
 
     def _apply_focus_chrome(self) -> None:
         """Give the fixed focus window the approved titlebar and navigation."""
+        signature = (self._maximized, self._wide_shell, self.winfo_width(), self._theme_name)
+        if signature == self._chrome_signature:
+            return
+        self._chrome_signature = signature
         if self._maximized:
             if not self._header_title.winfo_manager():
                 self._header_title.pack(anchor=tk.W, pady=(8, 6))
@@ -4604,9 +4887,12 @@ class RecorderApp(ctk.CTk):
             if hasattr(self, "_page_layouts"):
                 self._show_page(self._current_page, refresh_data=False)
         elif self._desktop_layout:
-            self._processing_panel.configure(height=max(650, self.winfo_height() - 170))
-        if hasattr(self, "_focus_library_panel") and self._maximized:
-            self._focus_library_panel.configure(height=max(650, self.winfo_height() - 140))
+            if self._current_page == "processing":
+                self._fit_process_table()
+        if hasattr(self, "_focus_library_panel") and self._current_page == "library":
+            self._fit_browser_panel()
+        if hasattr(self, "_process_table") and self._current_page == "processing":
+            self._fit_process_table()
         if hasattr(self, "_inline_buttons") and getattr(self, "_current_page", None) == "record":
             self._sync_recording_action_location()
 
@@ -4657,12 +4943,15 @@ class RecorderApp(ctk.CTk):
     def _layout_source_choices(self) -> None:
         if not hasattr(self, "_source_choice_cards"):
             return
-        for choice, detail in zip(self._source_choice_cards, self._source_choice_descriptions):
+        for choice in self._source_choice_cards:
             choice.pack_forget()
+            choice.grid_forget()
+        for index, (choice, detail) in enumerate(zip(self._source_choice_cards, self._source_choice_descriptions)):
             if self._desktop_layout:
                 choice.configure(fg_color=_theme_color("#0D1525"))
-                detail.pack(fill=tk.X, padx=14, pady=(0, 10))
-                choice.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+                choice.master.grid_columnconfigure(index, weight=1, uniform="capture-source")
+                detail.pack(fill=tk.X, padx=(38, 14), pady=(0, 10))
+                choice.grid(row=0, column=index, sticky="nsew", padx=(0, 8) if index < 2 else 0)
             else:
                 choice.configure(fg_color="transparent")
                 detail.pack_forget()
@@ -4684,12 +4973,12 @@ class RecorderApp(ctk.CTk):
         self.youtube_process_button.pack_forget()
         self._youtube_hint_label.pack_forget()
         if self._desktop_layout:
-            self._youtube_hint_label.pack(
-                side=tk.BOTTOM, fill=tk.X, padx=17, pady=(0, 16),
-            )
             self.youtube_process_button.configure(width=300)
             self.youtube_process_button.pack(
-                side=tk.BOTTOM, anchor=tk.W, padx=16, pady=(12, 6),
+                anchor=tk.W, padx=16, pady=(20, 6), after=self.youtube_profile_selector,
+            )
+            self._youtube_hint_label.pack(
+                fill=tk.X, padx=17, pady=(0, 16), after=self.youtube_process_button,
             )
         else:
             self.youtube_process_button.configure(width=140)
@@ -4700,16 +4989,35 @@ class RecorderApp(ctk.CTk):
         """Use the same folder browser in focus and full-screen layouts."""
         if not hasattr(self, "_browser_area"):
             return
+        short = not self._maximized and self.winfo_height() < 800
+        signature = (self._maximized, self._desktop_layout, short)
+        if getattr(self, "_browser_layout_signature", None) == signature:
+            self.after_idle(self._fit_browser_panel)
+            return
+        self._browser_layout_signature = signature
+        kicker, title, description = self._browser_heading._voice_heading_parts
+        if short:
+            kicker.pack_forget()
+            description.pack_forget()
+        else:
+            if not kicker.winfo_manager():
+                kicker.pack(fill=tk.X, before=title)
+            if not description.winfo_manager():
+                description.pack(fill=tk.X, pady=(1, 0), after=title)
+        self._browser_heading.pack_configure(pady=(12, 10) if short else (16, 17))
+        for button in (self._browser_choose_folder_button, self._focus_library_use_recording_button):
+            button.pack_configure(pady=0 if short else (17, 0))
         self._browser_heading_text.set("Explorar arquivos" if self._maximized else "Biblioteca")
         table = self._browser_table_holder
         preview = self._browser_preview
         table.pack_forget()
         preview.pack_forget()
-        self._focus_library_panel.pack_propagate(not self._maximized)
+        self._focus_library_panel.pack_propagate(False)
         if self._desktop_layout:
             preview.configure(width=430, height=150)
             preview.pack(side=tk.RIGHT, fill=tk.Y, padx=(14, 0), pady=(0, 12))
             preview.pack_propagate(False)
+            self._browser_open_button.master.pack_configure(pady=(12, 12))
             table.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             self._browser_preview_body_label.configure(wraplength=390)
             self._browser_preview_details_label.pack(
@@ -4717,26 +5025,63 @@ class RecorderApp(ctk.CTk):
                 before=self._browser_open_button.master,
             )
         else:
-            preview.configure(height=150 if self._browser_selected and self._browser_selected.kind == "audio" else 108)
+            preview.configure(height=self._browser_preview_height())
             preview.pack_propagate(False)
+            self._browser_open_button.master.pack_configure(pady=(2, 8))
             preview.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 12))
             table.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
             self._browser_preview_body_label.configure(wraplength=600)
             self._browser_preview_details_label.pack_forget()
+        wrap = 390 if self._desktop_layout else 600
+        self._browser_preview_details_label.configure(wraplength=wrap)
+        self._browser_topic_label.configure(wraplength=wrap)
+        self._browser_estimate.configure(wraplength=390 if self._desktop_layout else 630)
+        self.after_idle(self._fit_browser_panel)
+
+    def _fit_browser_panel(self) -> None:
+        if self._compact_mode:
+            return
+        available = self._page_viewports["library"]._parent_canvas.winfo_height()
+        if available < 100:
+            return
+        height = max(440, available - (22 if self._maximized else 33))
+        if int(self._focus_library_panel.cget("height")) != height:
+            self._focus_library_panel.configure(height=height)
+
+    def _browser_preview_height(self) -> int:
+        entry = self._browser_selected
+        if hasattr(self, "_browser_selected_paths") and len(self._selected_browser_entries()) > 1:
+            return 88 if not self._maximized and self.winfo_height() < 800 else 120
+        if entry is None:
+            return 112
+        if entry.kind == "audio":
+            height = 218
+        elif entry.kind in {"recording", "text_record"}:
+            if summary_available(entry.path):
+                height = 200 if load_topic(entry.path) else 230
+            else:
+                height = 164
+        elif entry.kind == "document" and entry.path.suffix.casefold() == ".md":
+            height = 164
+        else:
+            height = 120
+        button = getattr(self, "_browser_name_button", None)
+        return height + (36 if button is not None and button.winfo_manager() else 0)
 
     def _layout_processing_panel(self) -> None:
-        if not hasattr(self, "_processing_panel"):
-            return
-        if self._desktop_layout:
-            self._processing_panel.configure(height=max(650, self.winfo_height() - 170))
-            self._processing_panel.pack_propagate(False)
-        else:
-            self._processing_panel.pack_propagate(True)
+        if hasattr(self, "_process_table"):
+            self._process_table.layout(self._desktop_layout)
+            self.after_idle(self._fit_process_table)
 
     def _apply_desktop_typography(self) -> None:
         """Make content readable on large screens without enlarging the widget mode."""
         if not hasattr(self, "_container"):
             return
+        # The controls are retained, including hidden destinations. Their font
+        # sizes only change at the desktop breakpoint, not on every visit.
+        if self._typography_desktop == self._desktop_layout:
+            return
+        self._typography_desktop = self._desktop_layout
         styled = (
             ctk.CTkLabel, ctk.CTkButton, ctk.CTkEntry, ctk.CTkComboBox,
             ctk.CTkOptionMenu, ctk.CTkCheckBox, ctk.CTkRadioButton,
@@ -4795,7 +5140,7 @@ class RecorderApp(ctk.CTk):
                         self._desktop_style_applied[widget] = (target_font, target_height)
                 visit(widget)
 
-        visit(self._container)
+        visit(self._page_deck)
 
     def _sync_recording_action_location(self) -> None:
         """Keep the action near the form on wide windows and fixed on narrow ones."""
@@ -4898,6 +5243,9 @@ class RecorderApp(ctk.CTk):
             self._hide_button_tooltip()
 
     def _button_help_text(self, button: tk.Misc) -> str:
+        explicit_help = getattr(button, "_help_text", "")
+        if explicit_help:
+            return str(explicit_help)
         label = str(button.cget("text") or "").strip()
         command = button.cget("command")
         name = getattr(command, "__name__", "")
@@ -5242,6 +5590,7 @@ class RecorderApp(ctk.CTk):
         self.attributes("-topmost", not self._maximized)
         self._schedule_window_repaint()
         self.after_idle(self._apply_page_minimum)
+        self._schedule_release_notice()
 
     def _refresh_compact_controls(self) -> None:
         """Keep compact status and actions truthful without opening the widget."""
@@ -5255,6 +5604,8 @@ class RecorderApp(ctk.CTk):
             label, color = f"GRAVANDO  {self.elapsed.get()}", _COLORS["success"]
         elif finalizing:
             label, color = "FINALIZANDO GRAVAÇÃO", _COLORS["warning"]
+        elif self._recording_failure:
+            label, color = "GRAVAÇÃO INTERROMPIDA · ABRIR PARA VER", _COLORS["danger"]
         elif processing:
             activity = self._processing_activity or "Processando"
             label, color = f"{activity.upper()}  {self.elapsed.get()}", _COLORS["accent"]
@@ -5411,6 +5762,11 @@ class RecorderApp(ctk.CTk):
     def _update_content_scrollbar(self) -> None:
         self._content_scrollbar_after = None
         try:
+            # Reserve the same gutter on every page; hiding a scrollbar must
+            # not change field widths and trigger another layout/paint pass.
+            self._container._parent_frame.grid_columnconfigure(
+                1, minsize=self._container._scrollbar.winfo_reqwidth(),
+            )
             first, last = self._container._parent_canvas.yview()
             if last - first >= 0.999:
                 self._container._scrollbar.grid_remove()
@@ -5501,15 +5857,12 @@ class RecorderApp(ctk.CTk):
                 label.configure(wraplength=available)
 
     def _layout_settings_navigation(self, width: int) -> None:
-        columns = 3 if width < 600 else min(len(self._settings_section_buttons), 6)
-        if columns == self._settings_navigation_columns:
+        tab_width = min(120, max(84, int(width / 6)))
+        if tab_width == self._settings_tab_width:
             return
-        self._settings_navigation_columns = columns
-        for index in range(len(self._settings_section_buttons)):
-            self._settings_navigation.grid_columnconfigure(index, weight=1 if index < columns else 0)
-        for index, button in enumerate(self._settings_section_buttons.values()):
-            button.grid_forget()
-            button.grid(row=index // columns, column=index % columns, sticky="ew", padx=2, pady=2)
+        self._settings_tab_width = tab_width
+        for button in self._settings_section_buttons.values():
+            button.configure(width=tab_width)
 
     def _layout_theme_choices(self, width: int) -> None:
         if not hasattr(self, "_theme_choice_buttons"):
@@ -5552,6 +5905,8 @@ class RecorderApp(ctk.CTk):
         Batch each public control's options so it only redraws once here.
         """
         if visible_only and widget is not self and not widget.winfo_ismapped():
+            return
+        if visible_only and getattr(widget, "_voice_page", self._current_page) != self._current_page:
             return
         custom_options = (
             "bg_color", "fg_color", "text_color", "hover_color", "border_color", "button_color",
@@ -5603,18 +5958,27 @@ class RecorderApp(ctk.CTk):
         if tk.Frame.cget(widget, "background").lower() != color.lower():
             tk.Frame.configure(widget, background=color)
 
-    def _apply_page_theme(self, page: str) -> None:
+    def _apply_page_theme(self, page: str, *, force: bool = False) -> None:
         """Update a destination before showing it; hidden pages never block a switch."""
+        key = (page, self._maximized)
+        if not force and self._page_theme_cache.get(key) == self._theme_name:
+            return
+        self._page_theme_cache[key] = self._theme_name
+        shell = self._page_deck.shells[page]
+        shell.configure(fg_color=_COLORS["bg"])
+        self._sync_native_theme_background(shell)
+        viewport = self._page_viewports[page]
+        viewport.configure(bg_color=_COLORS["bg"], fg_color="transparent")
         if page == "settings":
-            self._retheme_widget_tree(self._focus_settings_heading)
-            self._retheme_widget_tree(self._settings_navigation)
-            section = getattr(self, "_active_settings_section", "verification")
-            self._retheme_widget_tree(self._settings_sections[section])
+            self._retheme_widget_tree(self._focus_settings_heading, force=force)
+            self._retheme_widget_tree(self._settings_navigation, force=force)
+            section = getattr(self, "_active_settings_section", "updates")
+            self._retheme_widget_tree(self._settings_sections[section], force=force)
             if self._maximized:
-                self._retheme_widget_tree(self._settings_context_panel)
+                self._retheme_widget_tree(self._settings_context_panel, force=force)
             for child in self._settings_panel.winfo_children():
                 if isinstance(child, ctk.CTkLabel):
-                    self._retheme_widget_tree(child)
+                    self._retheme_widget_tree(child, force=force)
             # Update the card itself without visiting its hidden sections.
             self._settings_panel.configure(fg_color=_theme_color("#0C1423"))
             return
@@ -5624,10 +5988,31 @@ class RecorderApp(ctk.CTk):
             "youtube": self._focus_youtube_panel,
         }
         if not self._maximized or page == "library":
-            self._retheme_widget_tree(focus_panels[page])
+            self._retheme_widget_tree(focus_panels[page], force=force)
+            if page == "record":
+                self._retheme_widget_tree(self._focus_record_actions, force=force)
         else:
             for widget, _options in self._page_layouts[page]:
-                self._retheme_widget_tree(widget)
+                self._retheme_widget_tree(widget, force=force)
+
+    def _settle_page_paint(self, serial: int) -> None:
+        """Repair first mapping at new bounds, then reuse that drawing on return.
+
+        Off-screen CTk canvases can retain clipped shapes after changing window
+        mode. Avoid the former delayed whole-window repaint on every navigation.
+        """
+        if serial != self._navigation_serial or self._compact_mode:
+            return
+        page = self._current_page
+        key = (page, self._maximized, self._desktop_layout,
+               getattr(self, "_active_settings_section", "updates") if page == "settings" else "")
+        bounds = (self._container._parent_canvas.winfo_width(), self._container._parent_canvas.winfo_height())
+        if self._page_paint_cache.get(key) != bounds:
+            self._page_paint_cache[key] = bounds
+            self._apply_page_theme(page, force=True)
+        # Scrolling a shared native canvas may copy clipped pixels from the
+        # previous destination even when all CTk drawing sizes are unchanged.
+        self.after_idle(self._invalidate_native_content)
 
     def _refresh_theme_drawings(self) -> None:
         """Redraw app-owned canvases and editor tags from their original roles."""
@@ -5653,6 +6038,8 @@ class RecorderApp(ctk.CTk):
             return
         self._hide_button_tooltip()
         self._theme_name = theme_name
+        self._page_theme_cache.clear()
+        self._page_paint_cache.clear()
         _ACTIVE_THEME_NAME = theme_name
         _COLORS.update(theme_colors(theme_name))
         configure_widget_defaults(ctk.ThemeManager.theme, theme_name)
@@ -5674,33 +6061,41 @@ class RecorderApp(ctk.CTk):
         style.map("TCombobox", fieldbackground=[("readonly", _COLORS["surface_alt"])], foreground=[("readonly", _COLORS["text"])])
         style.configure("Accent.Horizontal.TProgressbar", troughcolor=_COLORS["surface_alt"], background=_COLORS["accent"], bordercolor=_COLORS["surface_alt"])
 
-    def _show_page(self, page: str, *, refresh_data: bool = True) -> None:
-        """Show one direct destination in the widget; pages never nest."""
-        if page not in self._page_layouts:
-            raise ValueError(f"Página desconhecida: {page}")
-        if self._library_open and page != "library" and not self._close_transcript_editor():
+    def _page_presentation(self, page: str) -> tuple[object, ...]:
+        return (page, self._maximized, self._desktop_layout,
+                bool(self.device_info_text.get().strip()) if page == "record" else False,
+                self._use_inline_recording_actions() if page == "record" else False)
+
+    def _page_viewport_changed(self, page: str) -> None:
+        if not hasattr(self, "_page_layouts"):
             return
+        if page == "library":
+            self.after_idle(self._fit_browser_panel)
+        elif page == "processing":
+            self.after_idle(self._fit_process_table)
+        if page == self._current_page:
+            self._schedule_content_scrollbar()
+
+    def _layout_retained_page(self, page: str) -> None:
+        """Reflow a destination only when its window presentation changes."""
+        presentation = self._page_presentation(page)
+        if self._page_presentations.get(page) == presentation:
+            return
+        previous_container = self._container
+        self._container = self._page_viewports[page]
         self._ensure_page_layout(page)
-        self._apply_page_theme(page)
-        # The narrow recording layout has a fixed action bar. Other layouts
-        # reserve room below the scroll canvas for the rounded window corners.
+        for widget, _options in self._page_layouts[page]:
+            widget.pack_forget()
+        focus = {
+            "record": (self._focus_record_panel, self._focus_record_actions),
+            "file": (self._focus_file_panel,), "youtube": (self._focus_youtube_panel,),
+            "library": (self._focus_library_panel,), "processing": (self._focus_process_panel,),
+            "settings": (self._focus_settings_heading,),
+        }
+        for widget in focus[page]:
+            widget.pack_forget()
         bottom_inset = 4 if page == "record" and not self._use_inline_recording_actions() else 20
         self._container._parent_frame.pack_configure(pady=(0, bottom_inset))
-        for layouts in self._page_layouts.values():
-            for widget, _options in layouts:
-                widget.pack_forget()
-        self._focus_record_panel.pack_forget()
-        self._focus_library_panel.pack_forget()
-        self._focus_process_panel.pack_forget()
-        if self._focus_text_tools_visible:
-            self._focus_show_text_tools()
-        self._focus_file_panel.pack_forget()
-        self._focus_text_import_panel.pack_forget()
-        self._focus_youtube_panel.pack_forget()
-        self._focus_settings_heading.pack_forget()
-        if page != "library":
-            self._close_browser_audio()
-        self._focus_text_tools_visible = False
         context_panels = (
             self._file_context_panel, self._youtube_context_panel,
             self._settings_context_panel,
@@ -5715,7 +6110,7 @@ class RecorderApp(ctk.CTk):
             self._focus_settings_heading.pack(fill=tk.X, padx=27, pady=(23, 0))
             self._settings_kicker.pack_forget()
             self._settings_description.pack_forget()
-        elif self._maximized:
+        elif self._maximized and page == "settings":
             if not self._settings_kicker.winfo_manager():
                 self._settings_kicker.pack(fill=tk.X, padx=18, pady=(18, 2), before=self._settings_navigation)
             if not self._settings_description.winfo_manager():
@@ -5747,63 +6142,96 @@ class RecorderApp(ctk.CTk):
         if not self._maximized and page == "record":
             self._sync_focus_stop_choice()
             self._focus_record_panel.pack(fill=tk.X, padx=27, pady=(23, 18))
+            self._focus_record_actions.pack(
+                side=tk.BOTTOM, fill=tk.X, padx=29, pady=(8, 12),
+                before=self._container._parent_frame,
+            )
         elif page == "library":
-            if self._maximized:
-                self._focus_library_panel.configure(height=max(650, self.winfo_height() - 140))
             self._focus_library_panel.pack(
                 fill=tk.BOTH, expand=True,
                 padx=20 if self._maximized else 11,
                 pady=(12, 10) if self._maximized else (23, 10),
             )
             self._layout_browser()
-            if not refresh_data:
-                self._refresh_focus_library()
         elif not self._maximized and page == "processing":
             self._focus_process_panel.pack(fill=tk.BOTH, expand=True, padx=11, pady=(23, 10))
-            if not refresh_data:
-                self._refresh_focus_processes()
+            self._layout_processing_panel()
         elif not self._maximized and page == "file":
             self._focus_file_panel.pack(fill=tk.X, padx=27, pady=(23, 8))
         elif not self._maximized and page == "youtube":
             self._focus_youtube_panel.pack(fill=tk.X, padx=27, pady=(23, 8))
-        # Destinations always open at their first field.  Without this reset a
-        # tall previous page could leave a newly selected page scrolled to an
-        # apparently empty lower section.
-        self._container._parent_canvas.yview_moveto(0)
-        self.after_idle(lambda: self._container._parent_canvas.yview_moveto(0))
-        self.after(80, lambda: self._container._parent_canvas.yview_moveto(0))
+        self._page_presentations[page] = presentation
+        self._container = previous_container
 
-        page_titles = {
-            "record": ("Gravar", "Configure a captura e inicie quando estiver pronto."),
-            "file": ("Arquivo", "Importe uma gravação já existente"),
-            "youtube": ("YouTube", "Importe um vídeo autorizado para transcrever"),
-            "library": ("Biblioteca", "Encontre, revise e retome seus resultados"),
-            "processing": ("Processamentos", "Acompanhe a fila e continue usando o aplicativo"),
-            "settings": ("Ajustes", "Defina como o Voice Notes deve processar"),
-        }
-        title, hint = page_titles[page]
-        self._header_title.configure(text=title)
-        self._header_drag_hint.configure(text=hint)
-        self._apply_focus_chrome()
-        for key, button in self._page_buttons.items():
-            active = key == page
-            button.configure(
-                fg_color=(_theme_color("#354A6E") if not self._maximized else _theme_color("#314B70")) if active else "transparent",
-                text_color=_COLORS["text"] if active else _COLORS["muted"],
-            )
-        self._current_page = page
-        self._settings_open = page == "settings"
-        self._youtube_open = page == "youtube"
-        self._library_open = page == "library"
-        if page == "library" and refresh_data:
-            self._refresh_library()
-        if page == "processing" and refresh_data:
+    def _show_page(self, page: str, *, refresh_data: bool = True) -> None:
+        """Raise the retained destination without repacking or repaint timers."""
+        if page not in self._page_layouts:
+            raise ValueError(f"Página desconhecida: {page}")
+        # Keep the direct fast path also usable by lightweight regression tests.
+        page_key = (page, self._maximized, self._desktop_layout,
+                    bool(self.device_info_text.get().strip()) if page == "record" else False,
+                    self._use_inline_recording_actions() if page == "record" else False)
+        if page_key == self._shown_page_key:
+            if refresh_data:
+                self._refresh_page_data(page)
+            return
+        if self._library_open and page != "library" and not self._close_transcript_editor():
+            return
+        self._hide_button_tooltip()
+        self._navigation_serial += 1
+        if self._current_page == "library" and page != "library":
+            self._close_browser_audio()
+        # Lay out and raise while painting is suspended, then reveal the
+        # finished destination at once instead of control by control.
+        with frozen_paint(self):
+            self._layout_retained_page(page)
+            self._apply_page_theme(page)
+            self._container = self._page_viewports[page]
+            self._page_deck.show(page)
+
+            page_titles = {
+                "record": ("Gravar", "Configure a captura e inicie quando estiver pronto."),
+                "file": ("Arquivo", "Importe uma gravação já existente"),
+                "youtube": ("YouTube", "Importe um vídeo autorizado para transcrever"),
+                "library": ("Biblioteca", "Encontre, revise e retome seus resultados"),
+                "processing": ("Processamentos", "Acompanhe a fila e continue usando o aplicativo"),
+                "settings": ("Ajustes", "Defina como o Voice Notes deve processar"),
+            }
+            title, hint = page_titles[page]
+            self._header_title.configure(text=title)
+            self._header_drag_hint.configure(text=hint)
+            self._apply_focus_chrome()
+            for key, button in self._page_buttons.items():
+                active = key == page
+                colors = {
+                    "fg_color": (_theme_color("#354A6E") if not self._maximized else _theme_color("#314B70")) if active else "transparent",
+                    "text_color": _COLORS["text"] if active else _COLORS["muted"],
+                }
+                changes = {name: value for name, value in colors.items() if button.cget(name) != value}
+                if changes:
+                    button.configure(**changes)
+            self._current_page = page
+            self._settings_open = page == "settings"
+            self._youtube_open = page == "youtube"
+            self._library_open = page == "library"
+            self._shown_page_key = page_key
+            if refresh_data:
+                self._refresh_page_data(page)
+            self._apply_desktop_typography()
+            self.update_idletasks()
+        self._schedule_content_scrollbar()
+
+    def _page_scroll_key(self, page: str) -> tuple[str, str]:
+        return (page, getattr(self, "_active_settings_section", "updates") if page == "settings" else "")
+
+    def _refresh_page_data(self, page: str) -> None:
+        """Revalidate data independently of mapping the retained controls."""
+        if page == "library":
+            self._refresh_library(background=True)
+        elif page == "processing":
             self._refresh_processing_page()
-        if page == "settings" and refresh_data:
-            self._show_settings_section(getattr(self, "_active_settings_section", "verification"))
-        self._apply_desktop_typography()
-        self._schedule_widget_rounding()
-        self.after_idle(self._apply_page_minimum)
+        elif page == "settings":
+            self._show_settings_section(getattr(self, "_active_settings_section", "updates"))
 
     def _on_device_info_changed(self, *_: object) -> None:
         """Add or remove the device row without leaving a blank spacer."""
@@ -5835,22 +6263,38 @@ class RecorderApp(ctk.CTk):
         self._show_page("settings")
 
     def _show_settings_section(self, section: str) -> None:
+        section = "transcription" if section == "speakers" else section
         if section not in self._settings_sections:
             raise ValueError(f"Seção de ajustes desconhecida: {section}")
-        self._retheme_widget_tree(self._settings_sections[section])
-        for panel in self._settings_sections.values():
-            panel.pack_forget()
-        self._settings_sections[section].pack(fill=tk.X, padx=0, pady=(0, 4))
+        panel = self._settings_sections[section]
+        if panel.winfo_manager():
+            return
+        self._page_scroll_positions[self._page_scroll_key("settings")] = self._container._parent_canvas.yview()[0]
+        self._retheme_widget_tree(panel)
+        for old_panel in self._settings_sections.values():
+            if old_panel.winfo_manager():
+                old_panel.pack_forget()
+        panel.pack(fill=tk.X, padx=0, pady=(0, 4))
         for key, button in self._settings_section_buttons.items():
             active = key == section
             button.configure(
-                fg_color=_theme_color("#314B70") if active else "transparent",
-                text_color=_COLORS["text"] if active else _COLORS["muted"],
+                fg_color="transparent",
+                text_color=_COLORS["accent"] if active else _COLORS["muted"],
             )
+            self._settings_tab_indicators[key].configure(fg_color=_COLORS["accent"] if active else "transparent")
         self._active_settings_section = section
         if getattr(self, "_current_page", None) == "settings":
+            self._navigation_serial += 1
+            serial = self._navigation_serial
+            position = self._page_scroll_positions.get(self._page_scroll_key("settings"), 0.0)
+            def restore_scroll() -> None:
+                if serial == self._navigation_serial:
+                    self._container._parent_canvas.yview_moveto(position)
+                    self._schedule_content_scrollbar()
+                    self.after(24, lambda: self._settle_page_paint(serial))
+            self.after_idle(restore_scroll)
             self._apply_desktop_typography()
-            self.after_idle(self._apply_page_minimum)
+            self._schedule_content_scrollbar()
 
     def _toggle_api_provider_form(self) -> None:
         """Open a blank create form without mixing it with saved providers."""
@@ -6037,8 +6481,11 @@ class RecorderApp(ctk.CTk):
         )
         self._browser_directory = target.parent if target.parent.is_dir() else root
         self._browser_selected = None
+        self._browser_selected_paths.clear()
+        self._browser_multiselect = False
         self._browser_search.set("")
-        self._show_page("library")
+        self._show_page("library", refresh_data=False)
+        self._refresh_focus_library()
         for index, entry in enumerate(self._browser_visible_entries):
             if entry.path == target:
                 self._browser_selected = entry
@@ -6047,12 +6494,64 @@ class RecorderApp(ctk.CTk):
                 self._draw_browser_rows()
                 break
 
-    def _refresh_library(self) -> None:
+    def _refresh_library(self, *, background: bool = False) -> None:
+        self._library_scan_generation += 1
+        if background:
+            self._library_scan_requested = True
+            self._start_library_scan()
+            return
+        # Explicit changes (rename/delete/process/etc.) supersede any older
+        # asynchronous navigation snapshot before updating the visible data.
+        self._library_scan_requested = False
         if hasattr(self, "_browser_canvas") and self._current_page == "library":
             self._refresh_focus_library()
         library_root = Path(self.library_dir.get() or default_output_dir()).expanduser()
-        self._library_folder_available = library_root.is_dir()
-        self._library_items = discover_recordings(library_root, self._library_metadata)
+        self._apply_library_items(discover_recordings(library_root, self._library_metadata),
+                                  library_root.is_dir(), self._job_store.list())
+
+    def _start_library_scan(self) -> None:
+        """Coalesce navigation scans into one worker; never touch Tk there."""
+        if self._library_scan_running or not self._library_scan_requested:
+            return
+        self._library_scan_requested = False
+        self._library_scan_running = True
+        generation = self._library_scan_generation
+        root = Path(self.library_dir.get() or default_output_dir()).expanduser()
+        directory = self._browser_directory or root
+        def scan() -> None:
+            try:
+                actual = directory if directory.is_dir() else root
+                entries = browse_directory(actual, self._library_metadata)
+                items = discover_recordings(root, self._library_metadata)
+                result = (actual, entries, items, root.is_dir(), self._job_store.list())
+            except Exception as exc:
+                self._post_to_ui(self._finish_library_scan, generation, root, directory, None, exc)
+            else:
+                self._post_to_ui(self._finish_library_scan, generation, root, directory, result, None)
+        try:
+            threading.Thread(target=scan, name="library-navigation", daemon=True).start()
+        except RuntimeError as exc:
+            self._finish_library_scan(generation, root, directory, None, exc)
+
+    def _finish_library_scan(self, generation: int, root: Path, directory: Path,
+                             result: tuple | None, error: Exception | None) -> None:
+        self._library_scan_running = False
+        current_root = Path(self.library_dir.get() or default_output_dir()).expanduser()
+        current_directory = self._browser_directory or current_root
+        if generation == self._library_scan_generation and root == current_root and directory == current_directory:
+            if result is not None:
+                actual, entries, items, available, jobs = result
+                self._apply_library_items(items, available, jobs)
+                if self._current_page == "library":
+                    self._apply_browser_snapshot(actual, entries)
+            elif error is not None:
+                logging.getLogger(__name__).warning("Library navigation refresh failed: %s", error)
+        self._start_library_scan()
+
+    def _apply_library_items(self, items: list[LibraryItem], available: bool,
+                             jobs: list[ProcessingJob]) -> None:
+        self._library_folder_available = available
+        self._library_items = items
         self._library_tag_values = [
             "Todas as etiquetas",
             *sorted({tag for item in self._library_items for tag in item.tags}, key=str.casefold),
@@ -6061,7 +6560,7 @@ class RecorderApp(ctk.CTk):
             self.library_tag_filter.set("Todas as etiquetas")
         self.library_tag_selector.configure(state=tk.NORMAL if len(self._library_tag_values) > 1 else tk.DISABLED)
         self._refresh_recording_recent(self._library_items)
-        pending = [job for job in self._job_store.list() if job.status in {"queued", "running", "failed", "needs_attention", "warning"}]
+        pending = [job for job in jobs if job.status in {"queued", "running", "failed", "needs_attention", "warning"}]
         resumable = [job for job in pending if job.status in {"queued", "failed", "needs_attention"}]
         if not pending:
             self.queue_hint.set("Fila vazia")
@@ -6084,26 +6583,45 @@ class RecorderApp(ctk.CTk):
             self.retry_queue_button.configure(state=tk.NORMAL if resumable else tk.DISABLED)
 
     def _refresh_focus_library(self) -> None:
+        self._library_scan_generation += 1
         root = Path(self.library_dir.get() or default_output_dir()).expanduser()
         if self._browser_directory is None or not self._browser_directory.is_dir():
             self._browser_directory = root
             self._browser_history.clear()
         directory = self._browser_directory
-        self._browser_entries = browse_directory(directory, self._library_metadata)
+        self._apply_browser_snapshot(directory, browse_directory(directory, self._library_metadata), force=True)
+
+    def _apply_browser_snapshot(self, directory: Path, entries: list[BrowserEntry], *, force: bool = False) -> None:
+        key = (directory, tuple(entries))
+        self._browser_directory = directory
         self._browser_full_path.set(str(directory))
         self._browser_back_button.configure(state=tk.NORMAL if self._browser_history else tk.DISABLED)
         self._browser_up_button.configure(state=tk.NORMAL if directory.parent != directory else tk.DISABLED)
+        if not force and key == self._browser_snapshot_key:
+            self._browser_update_folder_actions()
+            return
+        self._browser_snapshot_key = key
+        self._browser_entries = entries
+        selected = self._browser_selected
+        if selected is not None:
+            self._browser_selected = next((entry for entry in entries if entry.path == selected.path), None)
         self._render_browser_breadcrumb(directory)
         self._render_focus_browser()
+        if self._browser_selected is not None and self._browser_selected != selected:
+            self._browser_select()
         if not directory.is_dir():
             self._browser_preview_title.set("Pasta indisponível")
             self._browser_preview_body.set("Escolha outra pasta para continuar.")
 
     def _render_browser_breadcrumb(self, directory: Path) -> None:
+        root = Path(self.library_dir.get() or default_output_dir()).expanduser()
+        key = (directory, root)
+        if key == self._breadcrumb_directory:
+            return
+        self._breadcrumb_directory = key
         frame = self._browser_breadcrumb
         for child in frame.winfo_children():
             child.destroy()
-        root = Path(self.library_dir.get() or default_output_dir()).expanduser()
         base = root.parent
         try:
             parts = directory.relative_to(base).parts
@@ -6134,12 +6652,17 @@ class RecorderApp(ctk.CTk):
         if order == "Nome Z–A":
             entries.sort(key=lambda entry: entry.title.casefold(), reverse=True)
         elif order == "Mais recentes":
-            entries.sort(key=lambda entry: entry.modified_at, reverse=True)
+            entries.sort(key=lambda entry: entry.sort_at, reverse=True)
         elif order == "Mais antigos":
-            entries.sort(key=lambda entry: entry.modified_at)
+            entries.sort(key=lambda entry: entry.sort_at)
         else:
             entries.sort(key=lambda entry: entry.title.casefold())
         self._browser_visible_entries = entries
+        visible_paths = {entry.path for entry in entries}
+        self._browser_selected_paths.intersection_update(visible_paths)
+        if self._browser_multiselect and selected_path not in self._browser_selected_paths:
+            self._browser_selected = next((entry for entry in entries if entry.path in self._browser_selected_paths), None)
+            selected_path = self._browser_selected.path if self._browser_selected else None
         if selected_path is None or all(entry.path != selected_path for entry in entries):
             self._browser_selected = None
             self._browser_preview_title.set("Selecione um arquivo ou pasta")
@@ -6149,6 +6672,12 @@ class RecorderApp(ctk.CTk):
             )
             self._browser_open_button.configure(text="Abrir", state=tk.DISABLED)
             self._browser_process_button.pack_forget()
+            self._browser_secondary_actions.pack_forget()
+            self._browser_topic_label.pack_forget()
+            self._browser_topic_button.pack_forget()
+            self._browser_name_button.pack_forget()
+            self._browser_estimate.pack_forget()
+            self._estimate_request += 1
             self._browser_audio_player.pack_forget()
             self._close_browser_audio()
             self._browser_audio_player.master.configure(height=108)
@@ -6177,13 +6706,118 @@ class RecorderApp(ctk.CTk):
                 parts.append(f"{documents} {'documento' if documents == 1 else 'documentos'}")
             self._browser_count.set("  ·  ".join(parts))
         self._browser_update_folder_actions()
+        self._refresh_browser_selection_bar()
+        if len(self._selected_browser_entries()) > 1:
+            self._browser_show_multiple()
 
-    def _layout_browser_heading(self, event: tk.Event[tk.Misc]) -> None:
-        width = event.width
-        for label, x in zip(self._browser_heading_labels, (
-            10, int(width * .46), int(width * .65), int(width * .84),
-        )):
+    def _selected_browser_entries(self) -> list[BrowserEntry]:
+        if not getattr(self, "_browser_multiselect", False):
+            return [self._browser_selected] if self._browser_selected is not None else []
+        paths = self._browser_selected_paths
+        return [entry for entry in self._browser_visible_entries if entry.path in paths]
+
+    def _refresh_browser_selection_bar(self) -> None:
+        entries = self._selected_browser_entries()
+        selecting = self._browser_multiselect
+        self._browser_selection_button.configure(text="Concluir seleção" if selecting else "Selecionar vários")
+        count_text = "1 selecionado" if len(entries) == 1 else f"{len(entries)} selecionados"
+        self._browser_selection_hint.configure(text=count_text if selecting else "Ctrl+clique ou Shift+clique")
+        if selecting:
+            self._browser_batch_button.pack(side=tk.RIGHT)
+            self._browser_batch_button.configure(state=tk.NORMAL if entries else tk.DISABLED)
+            self._browser_clear_selection_button.pack(side=tk.RIGHT, padx=(0, 6))
+        else:
+            self._browser_batch_button.pack_forget()
+            self._browser_clear_selection_button.pack_forget()
+
+    def _toggle_browser_multiselect(self) -> None:
+        self._browser_multiselect = not self._browser_multiselect
+        self._browser_selected_paths = {self._browser_selected.path} if self._browser_selected is not None else set()
+        self._draw_browser_rows()
+        self._refresh_browser_selection_bar()
+        self._browser_update_folder_actions()
+        if self._browser_selected is not None:
+            self._browser_select()
+
+    def _clear_browser_selection(self) -> None:
+        self._browser_selected_paths.clear()
+        self._browser_selection_anchor = None
+        self._browser_selected = None
+        self._render_focus_browser()
+
+    def _browser_select_all(self, _event: object = None) -> str:
+        self._browser_multiselect = True
+        self._browser_selected_paths = {entry.path for entry in self._browser_visible_entries}
+        self._browser_selected = next(iter(self._browser_visible_entries), None)
+        self._render_focus_browser()
+        if self._browser_selected is not None:
+            self._browser_select()
+        return "break"
+
+    def _browser_show_multiple(self) -> None:
+        entries = self._selected_browser_entries()
+        self._browser_preview_title.set(f"{len(entries)} itens selecionados")
+        self._browser_preview_body.set("Use Adicionar à fila para revisar e processar os áudios selecionados.")
+        self._browser_preview_details.set("Pastas selecionadas incluem os áudios diretamente dentro delas. A fila processa um áudio por vez.")
+        self._estimate_request += 1
+        self._close_browser_audio()
+        for widget in (self._browser_open_button, self._browser_process_button, self._browser_secondary_actions,
+                       self._browser_topic_label, self._browser_topic_button, self._browser_name_button,
+                       self._browser_estimate, self._browser_audio_player, self._browser_docx_button,
+                       self._browser_pdf_button):
+            widget.pack_forget()
+        if not self._desktop_layout:
+            self._browser_preview.configure(height=self._browser_preview_height())
+
+    @staticmethod
+    def _browser_column_positions(width: int) -> tuple[int, int, int, int]:
+        return 10, int(width * .46), int(width * .65), int(width * .84)
+
+    def _layout_browser_heading(self, event: tk.Event[tk.Misc] | None = None) -> None:
+        canvas = getattr(self, "_browser_canvas", None)
+        width = canvas.winfo_width() if canvas is not None else (event.width if event else 1)
+        for label, x in zip(self._browser_heading_labels, self._browser_column_positions(width)):
             label.place(x=x, y=4)
+
+    @staticmethod
+    def _fit_browser_text(text: str, font: tkfont.Font, width: int) -> str:
+        """Fit the actual rendered font, rather than guessing a character count."""
+        text = " ".join(text.split())
+        if width <= 0:
+            return ""
+        if font.measure(text) <= width:
+            return text
+        ellipsis = "…"
+        if font.measure(ellipsis) > width:
+            return ""
+        low, high = 0, len(text)
+        while low < high:
+            middle = (low + high + 1) // 2
+            if font.measure(text[:middle] + ellipsis) <= width:
+                low = middle
+            else:
+                high = middle - 1
+        return text[:low].rstrip() + ellipsis
+
+    def _browser_canvas_hover(self, event: tk.Event[tk.Misc]) -> None:
+        canvas = self._browser_canvas
+        index = int(canvas.canvasy(event.y) // 70)
+        _, type_x, detail_x, date_x = self._browser_column_positions(canvas.winfo_width())
+        column = 0 if event.x < type_x else 1 if event.x < detail_x else 2 if event.x < date_x else 3
+        cell = (index, column)
+        if cell == self._browser_hover_cell:
+            return
+        self._hide_button_tooltip()
+        self._browser_hover_cell = cell
+        description = self._browser_clipped_cells.get(cell, "")
+        if description:
+            canvas._help_text = description
+            self._button_tooltip_target = canvas
+            self._button_tooltip_after = self.after(600, self._show_button_tooltip)
+
+    def _browser_canvas_leave(self, _event: tk.Event[tk.Misc]) -> None:
+        self._browser_hover_cell = None
+        self._hide_button_tooltip()
 
     def _browser_canvas_scrollbar(self, *args: object) -> None:
         self._browser_canvas.yview(*args)
@@ -6196,22 +6830,60 @@ class RecorderApp(ctk.CTk):
     def _browser_canvas_select(self, event: tk.Event[tk.Misc]) -> None:
         index = int(self._browser_canvas.canvasy(event.y) // 70)
         if 0 <= index < len(self._browser_visible_entries):
-            self._browser_selected = self._browser_visible_entries[index]
+            entry = self._browser_visible_entries[index]
+            control, shift = bool(event.state & 0x0004), bool(event.state & 0x0001)
+            if shift:
+                self._browser_multiselect = True
+                if self._browser_selection_anchor is None:
+                    self._browser_selection_anchor = entry.path
+                paths = [item.path for item in self._browser_visible_entries]
+                anchor = paths.index(self._browser_selection_anchor) if self._browser_selection_anchor in paths else index
+                selected = set(paths[min(anchor, index):max(anchor, index)+1])
+                self._browser_selected_paths = self._browser_selected_paths | selected if control else selected
+            elif control or self._browser_multiselect:
+                if not self._browser_multiselect and self._browser_selected is not None:
+                    self._browser_selected_paths = {self._browser_selected.path}
+                self._browser_multiselect = True
+                if entry.path in self._browser_selected_paths:
+                    self._browser_selected_paths.remove(entry.path)
+                else:
+                    self._browser_selected_paths.add(entry.path)
+                self._browser_selection_anchor = entry.path
+            else:
+                self._browser_selected_paths = {entry.path}
+                self._browser_selection_anchor = entry.path
+            self._browser_selected = entry if entry.path in self._browser_selected_paths else next(
+                (item for item in self._browser_visible_entries if item.path in self._browser_selected_paths), None,
+            )
             self._browser_canvas.focus_set()
             self._draw_browser_rows()
-            self._browser_select()
+            self._refresh_browser_selection_bar()
+            if self._browser_selected is not None:
+                self._browser_select()
+            else:
+                self._render_focus_browser()
         else:
-            self._browser_selected = None
-            self._render_focus_browser()
+            self._clear_browser_selection()
 
     def _browser_canvas_open(self, event: tk.Event[tk.Misc]) -> None:
+        if self._browser_multiselect:
+            return
         self._browser_canvas_select(event)
         self._browser_open()
 
     def _draw_browser_rows(self) -> None:
         canvas = self._browser_canvas
+        if getattr(self, "_button_tooltip_target", None) is canvas:
+            self._hide_button_tooltip()
+        self._browser_hover_cell = None
+        self._browser_clipped_cells = {}
         entries = getattr(self, "_browser_visible_entries", ())
         width = max(1, canvas.winfo_width())
+        self._layout_browser_heading()
+        _, type_x, detail_x, date_x = self._browser_column_positions(width)
+        title_font = self._browser_fonts["title"]
+        body_font = self._browser_fonts["body"]
+        subtitle_font = self._browser_fonts["subtitle"]
         row_height = 70
         canvas.configure(scrollregion=(0, 0, width, max(len(entries) * row_height, canvas.winfo_height())))
         top = canvas.canvasy(0)
@@ -6237,7 +6909,8 @@ class RecorderApp(ctk.CTk):
         for index in range(first, last):
             entry = entries[index]
             y = index * row_height
-            selected = self._browser_selected is not None and entry.path == self._browser_selected.path
+            selected = (entry.path in self._browser_selected_paths if self._browser_multiselect else
+                        self._browser_selected is not None and entry.path == self._browser_selected.path)
             canvas.create_rectangle(
                 2, y + 3, width - 3, y + row_height - 3,
                 fill=_theme_color("#213251") if selected else _theme_color("#0D1525"),
@@ -6245,42 +6918,67 @@ class RecorderApp(ctk.CTk):
                 width=1,
             )
             icon_color = _theme_color("#363768") if entry.kind in {"folder", "recording"} else _theme_color("#294660")
-            canvas.create_rectangle(12, y + 17, 47, y + 52, fill=icon_color, outline="")
-            canvas.create_text(29, y + 34, text=icons.get(entry.kind, "▣"),
+            offset = 26 if self._browser_multiselect else 0
+            if self._browser_multiselect:
+                canvas.create_rectangle(12, y+28, 26, y+42, outline=_COLORS["accent"] if selected else _COLORS["muted"],
+                                        fill=_COLORS["accent"] if selected else _theme_color("#0D1525"), width=1)
+                if selected:
+                    canvas.create_line(14, y+35, 18, y+39, 24, y+31, fill=_COLORS["accent_text"], width=2)
+            canvas.create_rectangle(12+offset, y + 17, 47+offset, y + 52, fill=icon_color, outline="")
+            canvas.create_text(29+offset, y + 34, text=icons.get(entry.kind, "▣"),
                                fill=_theme_color("#DAD3FF"), font=("Segoe UI Emoji", 15))
-            title = entry.title.strip() or entry.path.name
-            title_limit = max(26, min(74, int((width * .46 - 75) / 7)))
-            if len(title) > title_limit:
-                title = title[:title_limit - 1].rstrip() + "…"
-            canvas.create_text(59, y + 24, text=title, anchor="w",
-                               fill=_theme_color("#F1F5FB"), font=("Segoe UI", 11, "bold"))
-            canvas.create_text(59, y + 46, text=subtitles.get(entry.kind, "Arquivo"), anchor="w",
-                               fill=_theme_color("#A9B9D1"), font=("Segoe UI", 9))
+            full_title = " ".join((entry.title.strip() or entry.path.name).split())
+            title_x = 59 + offset
+            title = self._fit_browser_text(full_title, title_font, type_x - title_x - 16)
+            if title != full_title:
+                self._browser_clipped_cells[index, 0] = full_title
+            canvas.create_text(title_x, y + 24, text=title, anchor="w",
+                               fill=_theme_color("#F1F5FB"), font=title_font, tags="browser_name")
+            subtitle = self._fit_browser_text(subtitles.get(entry.kind, "Arquivo"), subtitle_font, type_x - title_x - 16)
+            canvas.create_text(title_x, y + 46, text=subtitle, anchor="w",
+                               fill=_theme_color("#A9B9D1"), font=subtitle_font)
             type_label = types.get(entry.kind, "Arquivo")
             if entry.kind == "audio":
                 type_label = f"Áudio {entry.path.suffix.lstrip('.').upper()}"
-            canvas.create_text(int(width * .46), y + 35, text=type_label, anchor="w",
-                               fill=_theme_color("#CAD6E9"), font=("Segoe UI", 10))
-            detail = entry.detail or "—"
-            detail_limit = max(16, min(38, int((width * .19 - 10) / 7)))
-            if len(detail) > detail_limit:
-                detail = detail[:detail_limit - 1].rstrip() + "…"
-            canvas.create_text(int(width * .65), y + 35, text=detail, anchor="w",
-                               fill=_theme_color("#CAD6E9"), font=("Segoe UI", 10))
-            canvas.create_text(int(width * .84), y + 35,
-                               text=entry.modified_at.strftime("%d/%m/%Y"), anchor="w",
-                               fill=_theme_color("#A9B9D1"), font=("Segoe UI", 10))
+            full_detail = " ".join((entry.detail or "—").split())
+            full_date = entry.sort_at.strftime("%d/%m/%Y")
+            for column, x, end, full_text, ink in (
+                (1, type_x, detail_x, type_label, "#CAD6E9"),
+                (2, detail_x, date_x, full_detail, "#CAD6E9"),
+                (3, date_x, width, full_date, "#A9B9D1"),
+            ):
+                fitted = self._fit_browser_text(full_text, body_font, end - x - 16)
+                if fitted != full_text:
+                    self._browser_clipped_cells[index, column] = full_text
+                canvas.create_text(x, y + 35, text=fitted, anchor="w",
+                                   fill=_theme_color(ink), font=body_font, tags=f"browser_column_{column}")
 
     def _browser_select(self, _event: object = None) -> None:
         entry = self._browser_selected
         if entry is None:
             return
+        if len(self._selected_browser_entries()) > 1:
+            self._browser_show_multiple()
+            self._browser_update_folder_actions()
+            self._refresh_browser_selection_bar()
+            return
+        if not self._browser_multiselect:
+            self._browser_selected_paths = {entry.path}
+        if not self._browser_open_button.winfo_manager():
+            self._browser_open_button.pack(side=tk.RIGHT)
         self._browser_open_button.configure(state=tk.NORMAL)
         self._browser_preview_title.set(entry.title)
         self._browser_preview_body.set(
             f"{entry.detail or entry.kind.title()}  ·  {entry.path.name}"
         )
         self._browser_preview_details.set(self._browser_entry_details(entry))
+        self._browser_estimate.pack_forget()
+        self._estimate_request += 1
+        if entry.kind == "audio":
+            self._browser_estimate.configure(text="Calculando duração e estimativa…")
+            self._browser_estimate.pack(fill=tk.X, padx=14, pady=(6, 4), after=self._browser_preview_body_label)
+            self._request_processing_estimate(entry.path)
+        self._browser_refresh_topic(entry)
         self._browser_open_button.configure(
             text="Abrir pasta" if entry.kind in {"folder", "recording", "text_record"} else
                  "Abrir no player" if entry.kind == "audio" else "Abrir documento" if entry.kind == "document" else "Abrir arquivo"
@@ -6291,13 +6989,14 @@ class RecorderApp(ctk.CTk):
             if self._browser_audio_path != entry.path:
                 self._close_browser_audio()
             self._browser_audio_player.pack(fill=tk.X, pady=(7, 0), before=self._browser_open_button.master)
-            self._browser_audio_player.master.configure(height=150)
+            self._browser_audio_player.master.configure(height=self._browser_preview_height())
         else:
             self._close_browser_audio()
-            self._browser_audio_player.master.configure(height=108)
+            self._browser_audio_player.master.configure(height=self._browser_preview_height())
         for button in (self._browser_favorite_button, self._browser_metadata_button,
                        self._browser_docx_button, self._browser_pdf_button):
             button.pack_forget()
+        self._browser_secondary_actions.pack_forget()
         if entry.kind in {"recording", "text_record"}:
             key = self._browser_metadata_key(entry)
             data = self._library_metadata.load().get(str(key.resolve()).casefold(), {})
@@ -6305,10 +7004,20 @@ class RecorderApp(ctk.CTk):
             self._browser_favorite_button.configure(text="★ Favorito" if favorite else "☆ Favoritar")
             self._browser_favorite_button.pack(side=tk.LEFT, padx=(0, 7))
             self._browser_metadata_button.pack(side=tk.LEFT)
+            self._browser_secondary_actions.pack(
+                fill=tk.X, padx=14, pady=(7, 4), before=self._browser_open_button.master,
+            )
         if entry.kind == "document" and entry.path.suffix.casefold() == ".md":
             self._browser_docx_button.pack(side=tk.LEFT, padx=(0, 7))
+            self._browser_secondary_actions.pack(
+                fill=tk.X, padx=14, pady=(7, 4), before=self._browser_open_button.master,
+            )
+        if self._browser_pdf_source(entry) is not None:
             self._browser_pdf_button.pack(side=tk.LEFT)
         if entry.kind == "audio" and not (entry.path.parent / "transcription.md").is_file():
+            self._browser_process_button.configure(text="Processar áudio")
+            self._browser_process_button.pack(side=tk.RIGHT, padx=(0, 7))
+        elif entry.kind == "recording" and not any((entry.path / name).is_file() for name in ("transcription.md", "summary.md")):
             self._browser_process_button.configure(text="Processar áudio")
             self._browser_process_button.pack(side=tk.RIGHT, padx=(0, 7))
         elif entry.kind == "document" and entry.path.name.casefold() == "transcription.md":
@@ -6316,12 +7025,301 @@ class RecorderApp(ctk.CTk):
             self._browser_process_button.pack(side=tk.RIGHT, padx=(0, 7))
         self._browser_update_folder_actions()
 
+        self._browser_refresh_name(entry)
+        if not self._desktop_layout:
+            self._browser_preview.configure(height=self._browser_preview_height())
+
+    def _browser_refresh_topic(self, entry: BrowserEntry) -> None:
+        self._browser_topic_label.pack_forget()
+        self._browser_topic_button.pack_forget()
+        if entry.kind not in {"folder", "recording", "text_record"} or not summary_available(entry.path):
+            return
+        topic = load_topic(entry.path)
+        self._browser_topic_label.configure(
+            text=f"Assunto · {topic}" if topic else "Assunto · descrição curta ainda não gerada",
+        )
+        self._browser_topic_label.pack(
+            fill=tk.X, padx=14, pady=(9, 3), after=self._browser_preview_body_label,
+        )
+        if not topic:
+            busy = self._topic_active_folder is not None
+            self._browser_topic_button.configure(
+                text="Gerando descrição…" if busy and self._topic_active_folder == entry.path else "Gerar descrição curta",
+                state=tk.DISABLED if busy else tk.NORMAL,
+            )
+            self._browser_topic_button.pack(anchor="w", padx=14, pady=(2, 4), after=self._browser_topic_label)
+
+    def _browser_refresh_name(self, entry: BrowserEntry) -> None:
+        button = self._browser_name_button
+        button.pack_forget()
+        if entry.kind not in {"folder", "recording", "audio", "document"}:
+            return
+        if entry.kind == "document" and entry.path.name not in {"summary.md", "transcription.md"}:
+            return
+        audio = saved_meeting_audio(entry.path)
+        if audio is None:
+            return
+        busy = self._name_active_audio is not None
+        button.configure(
+            text="Sugerindo nome…" if self._name_active_audio == audio else "Renomear com IA",
+            state=tk.DISABLED if busy else tk.NORMAL,
+        )
+        anchor = (self._browser_topic_button if self._browser_topic_button.winfo_manager() else
+                  self._browser_topic_label if self._browser_topic_label.winfo_manager() else self._browser_preview_body_label)
+        button.pack(anchor="w", padx=14, pady=(2, 4), after=anchor)
+
+    def _browser_suggest_name(self) -> None:
+        entry = self._browser_selected
+        if entry is None or self._name_active_audio is not None:
+            return
+        audio = saved_meeting_audio(entry.path)
+        if audio is None:
+            return
+        reason = self._browser_name_busy_reason(audio)
+        if reason:
+            messagebox.showinfo("Gravação em uso", reason, parent=self)
+            return
+        self._name_active_audio = audio
+        self._browser_refresh_name(entry)
+        self._name_status("Sugerindo nome a partir do conteúdo salvo…")
+        provider = self._selected_summary_provider_code()
+        worker = threading.Thread(target=self._name_worker, args=(audio, provider), daemon=True)
+        try:
+            worker.start()
+        except RuntimeError as exc:
+            self._name_complete(audio, None, "", str(exc))
+
+    def _name_worker(self, audio: Path, provider: str) -> None:
+        from record_transcript_resume.synthesis import generate_name
+        try:
+            source, text = load_name_source(audio)
+            name = generate_name(text, provider=provider)
+            source.validate()
+        except Exception as exc:
+            self._post_to_ui(self._name_complete, audio, None, "", str(exc))
+            return
+        self._post_to_ui(self._name_complete, audio, source, name, None)
+
+    def _finish_name_suggestion(self) -> None:
+        self._name_active_audio = None
+        if self._name_dialog is not None:
+            self._name_dialog.destroy()
+            self._name_dialog = None
+        if self._browser_selected is not None:
+            self._browser_refresh_name(self._browser_selected)
+            if not self._desktop_layout:
+                self._browser_preview.configure(height=self._browser_preview_height())
+        if getattr(self, "_processing_status_text", "").startswith("Sugerindo nome"):
+            self._name_status("Revisão de nome encerrada. Arquivos preservados.")
+
+    def _name_status(self, message: str) -> None:
+        # Naming a different meeting must not replace a live pipeline's stage.
+        if self._pipeline_thread is None or not self._pipeline_thread.is_alive():
+            self._set_processing_status(message)
+
+    def _name_complete(self, audio: Path, source: NameSource | None, name: str, error: str | None) -> None:
+        if self._name_active_audio != audio:
+            return
+        if error or source is None:
+            self._finish_name_suggestion()
+            self._name_status("Não foi possível sugerir um nome")
+            messagebox.showerror("Não foi possível sugerir um nome", error or "Conteúdo indisponível.", parent=self)
+            return
+        dialog = ctk.CTkToplevel(self)
+        self._name_dialog = dialog
+        dialog.title("Renomear gravação com IA")
+        self._fit_dialog(dialog, 600, 430, 480, 350)
+        dialog.configure(fg_color=_COLORS["bg"])
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.protocol("WM_DELETE_WINDOW", self._finish_name_suggestion)
+        dialog.bind("<Escape>", lambda _event: self._finish_name_suggestion())
+        actions = ctk.CTkFrame(dialog, fg_color="transparent")
+        actions.pack(side=tk.BOTTOM, fill=tk.X, padx=22, pady=(8, 18))
+        body = ctk.CTkScrollableFrame(dialog, fg_color=_COLORS["surface"], corner_radius=12)
+        body.pack(fill=tk.BOTH, expand=True, padx=14, pady=(14, 0))
+        ctk.CTkLabel(body, text="Um nome para identificar esta reunião", anchor="w",
+                     font=("Segoe UI", 16, "bold"), text_color=_COLORS["text"]).pack(fill=tk.X, padx=14, pady=(14, 5))
+        ctk.CTkLabel(body, text="Confira a sugestão ou edite antes de aplicar à pasta e ao áudio.",
+                     anchor="w", justify=tk.LEFT, wraplength=500, text_color=_COLORS["muted"],
+                     font=("Segoe UI", 11)).pack(fill=tk.X, padx=14, pady=(0, 12))
+        ctk.CTkLabel(body, text=f"Áudio atual · {audio.name}", anchor="w", justify=tk.LEFT,
+                     wraplength=500, text_color=_COLORS["muted"], font=("Segoe UI", 10)).pack(fill=tk.X, padx=14, pady=(0, 12))
+        value = tk.StringVar(value=name)
+        name_entry = ctk.CTkEntry(body, textvariable=value, height=38,
+                                 fg_color=_COLORS["surface_input"], border_color=_COLORS["border_input"],
+                                 text_color=_COLORS["text"])
+        name_entry.pack(fill=tk.X, padx=14, pady=(0, 10))
+        destination_text = tk.StringVar()
+        ctk.CTkLabel(body, textvariable=destination_text, anchor="w", justify=tk.LEFT, wraplength=500,
+                     text_color=_COLORS["text"], font=("Segoe UI", 11)).pack(fill=tk.X, padx=14, pady=(0, 14))
+        def preview(*_args):
+            try:
+                folder, renamed = plan_meeting_name(audio, value.get())
+                destination_text.set(f"Pasta · {folder.name}\nÁudio · {renamed.name}")
+            except (OSError, ValueError):
+                destination_text.set("Informe um nome válido.")
+        value.trace_add("write", preview)
+        preview()
+        ctk.CTkButton(actions, text="Cancelar", command=self._finish_name_suggestion,
+                      width=100, height=34, fg_color=_COLORS["surface_button"],
+                      hover_color=_COLORS["surface_button_hover"], text_color=_COLORS["text"]).pack(side=tk.RIGHT)
+        ctk.CTkButton(actions, text="Aplicar nome", command=lambda: self._apply_suggested_name(source, value.get()),
+                      width=125, height=34, fg_color=_COLORS["accent"], hover_color=_COLORS["accent_hover"],
+                      text_color=_COLORS["accent_text"]).pack(side=tk.RIGHT, padx=(0, 8))
+        dialog.after(100, name_entry.focus_set)
+
+    def _browser_name_busy_reason(self, audio: Path) -> str | None:
+        reason = self._browser_delete_busy_reason(audio.parent, ignore_naming=True)
+        if reason:
+            return reason.replace("excluir", "renomear").replace("excluí-lo", "renomeá-lo").replace("excluí-la", "renomeá-la")
+        document = getattr(self, "_editor_document_path", None)
+        if self._library_editing and document is not None and path_is_within(document, audio.parent):
+            return "Feche o documento desta gravação no editor antes de renomear a pasta e o áudio."
+        if self._browser_delete_pending is not None and (
+                path_is_within(audio, self._browser_delete_pending) or path_is_within(self._browser_delete_pending, audio.parent)):
+            return "Aguarde o envio à Lixeira terminar antes de renomear esta gravação."
+        if self._pdf_preview_running:
+            return "Aguarde a preparação do PDF terminar antes de renomear a gravação."
+        return None
+
+    def _apply_suggested_name(self, source: NameSource, name: str) -> None:
+        from record_transcript_resume.pipeline import PipelineResult, finalize_content_name
+        parent = self._name_dialog or self
+        reason = self._browser_name_busy_reason(source.audio)
+        if reason:
+            messagebox.showinfo("Gravação em uso", reason, parent=parent)
+            return
+        try:
+            source.validate()
+            if not safe_name(name):
+                raise ValueError("Informe um nome válido para esta gravação.")
+            recorded = recording_time(source.audio) or recording_time(source.audio.parent) or datetime.fromtimestamp(source.audio.stat().st_mtime)
+            save_metadata(source.audio.parent, recorded_at=recorded.isoformat(), audio_file=source.audio.name)
+            self._close_browser_audio()
+            result = finalize_content_name(PipelineResult(
+                folder=source.audio.parent, mp3_path=source.audio,
+                transcript_path=source.audio.with_name("transcription.md") if source.audio.with_name("transcription.md").is_file() else None,
+                summary_path=source.audio.with_name("summary.md") if source.audio.with_name("summary.md").is_file() else None,
+                content_name=safe_name(name), source_folder=source.audio.parent,
+            ))
+        except (OSError, ValueError, UnicodeError) as exc:
+            messagebox.showerror("Não foi possível renomear", str(exc), parent=parent)
+            return
+        try:
+            self._follow_meeting_paths(source.audio, result)
+        except OSError as exc:
+            messagebox.showwarning("Nome aplicado", f"Os arquivos foram renomeados, mas alguns vínculos não puderam ser atualizados:\n{exc}", parent=parent)
+        self._finish_name_suggestion()
+        self._refresh_library()
+        self._refresh_processing_page()
+        if self._current_page == "library" and self._browser_selected is not None:
+            path = self._browser_selected.path
+            self._browser_selected = next((entry for entry in self._browser_visible_entries if entry.path == path), None)
+            if self._browser_selected is not None:
+                self._browser_select()
+        if result.warnings:
+            messagebox.showwarning("Renomeação com aviso", "\n".join(result.warnings), parent=self)
+        else:
+            self._name_status(f"Nome atualizado · {result.folder.name}")
+
+    def _refresh_selected_estimate(self, *_args) -> None:
+        entry = getattr(self, "_browser_selected", None)
+        if entry is not None and entry.kind == "audio":
+            self._estimate_request += 1
+            self._request_processing_estimate(entry.path)
+
+    def _request_processing_estimate(self, path: Path) -> None:
+        request = self._estimate_request
+        self._estimate_audio_seconds = 0
+        choices = (self.pipeline_model.get(), self._selected_transcription_provider_code(),
+                   self._selected_summary_provider_code(), "both", self.diarize_speakers.get())
+        pending = [j for j in self._job_store.list() if j.status in {"queued", "running"}]
+        in_queue = any(j.audio_path.resolve() == path.resolve() for j in pending)
+        queue_note = ("\nEste áudio já está na fila ou em processamento." if in_queue else
+                      f"\nFila · {len(pending)} tarefa(s) antes deste áudio; previsão não inclui espera." if pending else "")
+        def probe():
+            try:
+                stat = path.stat()
+                key = (str(path), stat.st_mtime_ns, stat.st_size)
+                duration = self._duration_cache.get(key)
+                if duration is None:
+                    duration = media_duration(path)
+                    if len(self._duration_cache) > 128:
+                        self._duration_cache.clear()
+                    self._duration_cache[key] = duration
+                estimate = self._timing_store.estimate(
+                    profile_key(*choices, transcription_threads()), duration,
+                    model=choices[0], local=choices[1] == "local", speakers=choices[4],
+                )
+                label = (f"Áudio · {self._format_duration(round(duration))}\nProcessamento · {estimate.label()}"
+                         if estimate else "Duração indisponível · não foi possível calcular a estimativa.")
+                label += queue_note
+            except Exception:
+                duration, label = 0, "Não foi possível calcular a estimativa deste arquivo."
+            self._post_to_ui(self._show_processing_estimate, request, path, duration, label)
+        threading.Thread(target=probe, name="audio-duration", daemon=True).start()
+
+    def _show_processing_estimate(self, request: int, path: Path, duration: float, label: str) -> None:
+        if (request != self._estimate_request or self._browser_selected is None
+                or self._browser_selected.path != path):
+            return
+        self._estimate_audio_seconds = duration
+        self._browser_estimate.configure(text=label)
+
+    def _browser_generate_topic(self) -> None:
+        entry = self._browser_selected
+        if entry is None or self._topic_active_folder is not None or not summary_available(entry.path):
+            return
+        if self._pending_library_delete_blocks(entry.path):
+            return
+        if self._name_operation_blocks(entry.path):
+            return
+        folder = entry.path
+        provider = self._summary_provider_code_for_label(self.summary_provider.get())
+        self._topic_active_folder = folder
+        self._browser_refresh_topic(entry)
+        self.status.set("Gerando descrição curta com a IA configurada…")
+        worker = threading.Thread(target=self._topic_worker, args=(folder, provider), daemon=True)
+        try:
+            worker.start()
+        except RuntimeError as exc:
+            self._topic_complete(folder, str(exc))
+
+    def _topic_worker(self, folder: Path, provider: str) -> None:
+        error = None
+        try:
+            from record_transcript_resume.synthesis import generate_topic
+            summary_path = folder / "summary.md"
+            original = summary_path.read_bytes()
+            topic = generate_topic(original.decode("utf-8-sig"), provider=provider)
+            if summary_path.read_bytes() != original:
+                raise OSError("O resumo mudou durante a geração. Tente novamente.")
+            save_topic(folder, topic, summary_bytes=original)
+        except Exception as exc:
+            error = str(exc)
+        self._post_to_ui(self._topic_complete, folder, error)
+
+    def _topic_complete(self, folder: Path, error: str | None) -> None:
+        self._topic_active_folder = None
+        entry = self._browser_selected
+        if entry is not None:
+            self._browser_refresh_topic(entry)
+            if not self._desktop_layout:
+                self._browser_preview.configure(height=self._browser_preview_height())
+        if error:
+            self.status.set("Não foi possível gerar a descrição curta")
+            messagebox.showerror("Descrição não gerada", error, parent=self)
+        else:
+            self.status.set("Descrição curta salva na pasta da reunião")
+
     @staticmethod
     def _browser_entry_details(entry: BrowserEntry) -> str:
         details = [f"Modificado em {entry.modified_at:%d/%m/%Y às %H:%M}"]
         if entry.kind in {"folder", "recording", "text_record"}:
             try:
-                children = sorted(entry.path.iterdir(), key=lambda path: path.name.casefold())
+                children = sorted((path for path in entry.path.iterdir() if not is_internal_metadata(path)),
+                                  key=lambda path: path.name.casefold())
             except OSError:
                 children = []
             if children:
@@ -6339,11 +7337,12 @@ class RecorderApp(ctk.CTk):
 
     def _browser_update_folder_actions(self) -> None:
         deleting = self._browser_delete_pending is not None
-        can_manage = self._browser_manage_target() is not None and not deleting
+        multiple = len(self._selected_browser_entries()) > 1
+        can_manage = self._browser_manage_target() is not None and not deleting and not multiple
         for button in (self._browser_move_button, self._browser_rename_button):
             button.configure(state=tk.NORMAL if can_manage else tk.DISABLED)
         self._browser_delete_button.configure(
-            state=tk.NORMAL if self._browser_selected is not None and not deleting else tk.DISABLED,
+            state=tk.NORMAL if self._browser_selected is not None and not deleting and not multiple else tk.DISABLED,
             text="Enviando…" if deleting else "Excluir",
         )
         self._browser_process_button.configure(state=tk.DISABLED if deleting else tk.NORMAL)
@@ -6360,6 +7359,9 @@ class RecorderApp(ctk.CTk):
         self._close_browser_audio()
         self._browser_directory = directory
         self._browser_selected = None
+        self._browser_selected_paths.clear()
+        self._browser_multiselect = False
+        self._browser_selection_anchor = None
         self._browser_search.set("")
         self._refresh_focus_library()
 
@@ -6373,8 +7375,13 @@ class RecorderApp(ctk.CTk):
             self._browser_navigate(directory.parent)
 
     def _browser_open(self, _event: object = None) -> None:
+        if len(RecorderApp._selected_browser_entries(self)) > 1:
+            return
         entry = self._browser_selected
         if entry is None:
+            return
+        if entry.kind == "audio" and RecorderApp._capture_in_progress(self):
+            messagebox.showinfo("Gravação em andamento", "A reprodução fica indisponível durante a gravação para evitar que o áudio do player seja capturado.", parent=self)
             return
         if (getattr(self, "_browser_delete_pending", None) is not None
                 and self._pending_library_delete_blocks(entry.path)):
@@ -6441,6 +7448,9 @@ class RecorderApp(ctk.CTk):
                 and self._pending_library_delete_blocks(entry.path)):
             return
         if entry is None or entry.kind != "audio":
+            return
+        if RecorderApp._capture_in_progress(self):
+            messagebox.showinfo("Gravação em andamento", "Você pode processar outro áudio, mas a reprodução fica indisponível para não interferir na gravação.", parent=self)
             return
         if sys.platform != "win32":
             self._browser_open()
@@ -6560,7 +7570,25 @@ class RecorderApp(ctk.CTk):
             return True
         return False
 
-    def _browser_delete_busy_reason(self, target: Path) -> str | None:
+    def _name_operation_blocks(self, *paths: Path) -> bool:
+        audio = getattr(self, "_name_active_audio", None)
+        if audio is not None and any(
+                path_is_within(path, audio.parent) or path_is_within(audio.parent, path) for path in paths):
+            messagebox.showinfo(
+                "Nome em revisão", "Aguarde a sugestão de nome terminar ou feche a janela de revisão antes de alterar esta gravação.",
+                parent=self._name_dialog or self,
+            )
+            return True
+        return False
+
+    def _browser_delete_busy_reason(self, target: Path, *, ignore_naming: bool = False) -> str | None:
+        naming_audio = getattr(self, "_name_active_audio", None)
+        if not ignore_naming and naming_audio is not None and (
+                path_is_within(naming_audio, target) or path_is_within(target, naming_audio.parent)):
+            return "Aguarde a sugestão de nome terminar ou feche sua revisão antes de excluir esta gravação."
+        topic_folder = getattr(self, "_topic_active_folder", None)
+        if topic_folder and (path_is_within(topic_folder, target) or path_is_within(target, topic_folder)):
+            return "Aguarde a descrição curta terminar antes de excluir este item."
         service = self._service
         finalizing = self._stop_thread is not None and self._stop_thread.is_alive()
         if service is not None and (
@@ -6588,6 +7616,8 @@ class RecorderApp(ctk.CTk):
         return None
 
     def _browser_delete(self, _event: object = None) -> str:
+        if len(self._selected_browser_entries()) > 1:
+            return "break"
         # Unlike move/rename, deletion never falls back to the current folder.
         entry = self._browser_selected
         directory = self._browser_directory
@@ -6682,6 +7712,17 @@ class RecorderApp(ctk.CTk):
     def _browser_relocate(self, source: Path, destination: Path) -> None:
         if self._pending_library_delete_blocks(source, destination):
             return
+        if self._name_operation_blocks(source, destination):
+            return
+        if self._capture_in_progress() and self._service is not None:
+            current = self._service.current_output_path
+            if current is not None and (path_is_within(current, source) or path_is_within(destination, current.parent)):
+                messagebox.showinfo("Pasta em gravação", "Aguarde a gravação terminar antes de mover ou renomear esta pasta.", parent=self)
+                return
+        topic_folder = self._topic_active_folder
+        if topic_folder and (path_is_within(topic_folder, source) or path_is_within(source, topic_folder)):
+            messagebox.showinfo("Descrição em andamento", "Aguarde a descrição curta terminar antes de mover esta pasta.", parent=self)
+            return
         if destination.exists():
             messagebox.showerror("Pasta existente", "Já existe uma pasta com esse nome no destino.", parent=self)
             return
@@ -6741,17 +7782,28 @@ class RecorderApp(ctk.CTk):
         if entry.kind == "document" and entry.path.name.casefold() == "transcription.md":
             self._open_summary_regeneration_dialog(entry.path)
             return
-        if entry.kind != "audio":
+        from record_transcript_resume.batch_processing import browser_requests
+        requests, skipped = browser_requests(self._selected_browser_entries(), Path(self.library_dir.get()).expanduser())
+        if len(requests) > 1:
+            self._open_batch_review(requests, self._batch_options(), skipped=skipped)
             return
+        if not requests:
+            return
+        request = requests[0]
         if self._queue_pipeline(
-            entry.path, _LANG_CODES.get(self.pipeline_language.get(), "pt"),
+            request.audio, _LANG_CODES.get(self.pipeline_language.get(), "pt"),
             self.pipeline_model.get(), self._selected_summary_provider_code(),
             self._selected_summary_template_code(), output_mode="both",
-            output_dir=entry.path.parent,
-            reuse_source_folder=entry.path.parent != Path(self.library_dir.get()).expanduser(),
+            output_dir=request.output,
+            reuse_source_folder=request.reuse_source_folder,
             additional_instructions=RecorderApp._meeting_instructions(self),
         ):
             self._show_page("processing")
+
+    def _browser_process_selection(self) -> None:
+        from record_transcript_resume.batch_processing import browser_requests
+        requests, skipped = browser_requests(self._selected_browser_entries(), Path(self.library_dir.get()).expanduser())
+        self._open_batch_review(requests, self._batch_options(), skipped=skipped)
 
     @staticmethod
     def _browser_metadata_key(entry: BrowserEntry) -> Path:
@@ -6835,6 +7887,78 @@ class RecorderApp(ctk.CTk):
             messagebox.showerror("Não foi possível exportar", str(exc), parent=self)
             return
         self.status.set(f"Documento exportado: {Path(chosen).name}")
+
+    @staticmethod
+    def _browser_pdf_source(entry: BrowserEntry) -> Path | None:
+        if entry.kind == "document" and entry.path.suffix.casefold() in {".md", ".txt"}:
+            return entry.path
+        if entry.kind in {"recording", "text_record", "folder"}:
+            for name in ("summary.md", "transcription.md"):
+                if name == "summary.md" and not summary_available(entry.path):
+                    continue
+                candidate = entry.path / name
+                if candidate.is_file():
+                    return candidate
+        return None
+
+    def _browser_open_pdf(self) -> None:
+        entry = self._browser_selected
+        if entry is not None:
+            source = self._browser_pdf_source(entry)
+            if source is not None:
+                self._open_pdf_preview(source)
+
+    def _open_editor_pdf(self) -> None:
+        if not self._library_editing or self._editor_document_path is None:
+            return
+        content = self.transcript_editor.get("1.0", "end-1c")
+        if not content.strip():
+            messagebox.showinfo("Documento vazio", "Escreva algum conteúdo antes de abrir o PDF.", parent=self)
+            return
+        self._open_pdf_preview(self._editor_document_path, content=content)
+
+    def _set_pdf_preview_busy(self, busy: bool) -> None:
+        for name in ("_browser_pdf_button", "_editor_pdf_button"):
+            button = getattr(self, name, None)
+            if button is not None and button.winfo_exists():
+                button.configure(state=tk.DISABLED if busy else tk.NORMAL)
+
+    def _open_pdf_preview(self, source: Path, *, content: str | None = None) -> None:
+        if self._pdf_preview_running:
+            return
+        if (self._browser_delete_pending is not None
+                and self._pending_library_delete_blocks(source)):
+            return
+        self._pdf_preview_running = True
+        self._set_pdf_preview_busy(True)
+        self.status.set("Preparando PDF para abrir no leitor padrão…")
+        worker = threading.Thread(target=self._pdf_preview_worker, args=(source, content), daemon=True)
+        try:
+            worker.start()
+        except RuntimeError as exc:
+            self._on_pdf_preview_ready(None, str(exc))
+
+    def _pdf_preview_worker(self, source: Path, content: str | None) -> None:
+        from record_transcript_resume.exports import create_pdf_preview
+        try:
+            preview = create_pdf_preview(source, content=content)
+        except Exception as exc:
+            self._post_to_ui(self._on_pdf_preview_ready, None, str(exc))
+        else:
+            self._post_to_ui(self._on_pdf_preview_ready, preview, None)
+
+    def _on_pdf_preview_ready(self, preview: Path | None, error: str | None) -> None:
+        self._pdf_preview_running = False
+        self._set_pdf_preview_busy(False)
+        if error is None and preview is not None:
+            try:
+                os.startfile(str(preview))
+            except (OSError, AttributeError) as exc:
+                error = str(exc)
+        if error is not None:
+            messagebox.showerror("Não foi possível abrir o PDF", error, parent=self)
+        else:
+            self.status.set("PDF aberto no leitor padrão · use Salvar como para guardar uma cópia")
 
     def _retry_pending_jobs(self) -> None:
         resumable: list[ProcessingJob] = []
@@ -7246,374 +8370,76 @@ class RecorderApp(ctk.CTk):
         ):
             self._show_page("processing")
 
-    def _refresh_processing_page(self) -> None:
-        """Render persisted serial-queue state without relying on the active page."""
-        if not hasattr(self, "processing_job_list"):
-            return
-        if not self._maximized:
-            self._refresh_focus_processes()
-            return
-        content_width = max(
-            340,
-            (self.processing_job_list.winfo_width() - 70) // 2
-            if self._desktop_layout else self.processing_job_list.winfo_width() - 44,
+    def _job_forecast(self, job: ProcessingJob) -> str:
+        if job.processing_seconds > 0 and job.status in {"completed", "warning"}:
+            return f"Concluído em\n{self._format_duration(round(job.processing_seconds))}"
+        if job.status in {"completed", "warning"}:
+            return "Tempo não\nregistrado"
+        if not job.audio_seconds:
+            return "Sem estimativa"
+        estimate = self._timing_store.estimate(
+            profile_key(job.model_size, job.transcription_provider, job.provider,
+                        job.output_mode, job.separate_speakers, transcription_threads()),
+            job.audio_seconds, model=job.model_size, local=job.transcription_provider == "local",
+            speakers=job.separate_speakers, summary=job.output_mode != "transcription",
         )
-        for child in self.processing_job_list.winfo_children():
-            child.destroy()
-        all_jobs = self._job_store.list()
-        active_jobs = [
-            job for job in all_jobs
-            if job.status in {"queued", "running", "failed", "needs_attention", "cancelled", "warning"}
-        ]
-        completed_jobs = sorted(
-            (job for job in all_jobs if job.status == "completed"),
-            key=lambda job: job.updated_at, reverse=True,
-        )[:5]
-        jobs = [*active_jobs, *completed_jobs]
-        active = next((job for job in jobs if job.status == "running"), None)
-        queued_count = sum(job.status == "queued" for job in jobs)
-        if active is not None:
-            self.processing_overview.set(
-                f"Processando 1 áudio por vez · agora: {active.audio_path.name} · {queued_count} aguardando",
-            )
-        elif queued_count:
-            self.processing_overview.set(f"{queued_count} áudio(s) aguardando processamento serial")
-        elif active_jobs:
-            self.processing_overview.set("Veja avisos e tarefas que exigem atenção abaixo.")
-        elif completed_jobs:
-            self.processing_overview.set("Últimos resultados concluídos · abra a pasta ou encontre tudo na Biblioteca")
-        else:
-            self.processing_overview.set("Nenhum processamento na fila")
-            ctk.CTkLabel(
-                self.processing_job_list,
-                text="Quando você clicar em Processar áudio na Biblioteca, o acompanhamento aparecerá aqui.",
-                font=("Segoe UI", 10), text_color=_COLORS["muted"], anchor="w", justify=tk.LEFT, wraplength=content_width,
-            ).pack(fill=tk.X, padx=12, pady=12)
+        if estimate is None:
+            return "Sem estimativa"
+        low, high = max(1, round(estimate.low/60)), max(1, round(estimate.high/60))
+        return f"≈ {low}–{high} min\n" + ("Com histórico" if estimate.samples else "Estimativa inicial")
+
+    def _refresh_processing_page(self) -> None:
+        if not hasattr(self, "_process_table"):
             return
-
-        status_labels = {
-            "queued": "NA FILA", "running": "PROCESSANDO", "failed": "FALHOU",
-            "needs_attention": "ATENÇÃO", "cancelled": "CANCELADO", "warning": "COM AVISO",
-            "completed": "PRONTO",
-        }
-        status_colors = {
-            "queued": _theme_color("#C9D3FF"), "running": _theme_color("#B7AAFF"), "failed": _COLORS["danger"],
-            "needs_attention": _COLORS["warning"], "cancelled": _COLORS["muted"],
-            "warning": _COLORS["warning"],
-            "completed": _COLORS["success"],
-        }
-        destinations: dict[str, ctk.CTkFrame] = {}
-        if self._desktop_layout:
-            for key, title, group in (
-                ("active", "EM ANDAMENTO E ATENÇÃO", active_jobs),
-                ("completed", "CONCLUÍDOS RECENTEMENTE", completed_jobs),
-            ):
-                column = ctk.CTkFrame(self.processing_job_list, fg_color="transparent")
-                column.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 4))
-                ctk.CTkLabel(
-                    column, text=title, font=("Segoe UI", 12, "bold"),
-                    text_color=_COLORS["muted"], anchor="w",
-                ).pack(fill=tk.X, padx=10, pady=(10, 5))
-                if not group:
-                    ctk.CTkLabel(
-                        column,
-                        text="Nenhum processamento nesta seção.",
-                        font=("Segoe UI", 12), text_color=_COLORS["muted"], anchor="w",
-                    ).pack(fill=tk.X, padx=10, pady=12)
-                destinations[key] = column
-        for job in jobs:
-            destination = destinations.get(
-                "completed" if job.status == "completed" else "active",
-                self.processing_job_list,
-            )
-            row = ctk.CTkFrame(destination, fg_color=_theme_color("#0D1525"), corner_radius=9)
-            row.pack(fill=tk.X, padx=10, pady=(8, 0))
-            heading = ctk.CTkFrame(row, fg_color="transparent")
-            heading.pack(fill=tk.X, padx=10, pady=(8, 1))
-            name = job.audio_path.name
-            max_name_chars = max(32, (content_width - 100) // 7)
-            if len(name) > max_name_chars:
-                name = f"{name[:max_name_chars - 1]}…"
-            ctk.CTkLabel(
-                heading, text=name, font=("Segoe UI", 10, "bold"),
-                text_color=_COLORS["text"], anchor="w", justify=tk.LEFT,
-            ).pack(side=tk.LEFT, fill=tk.X, expand=True)
-            action_text = status_labels.get(job.status, job.status.upper())
-            ctk.CTkLabel(
-                heading, text=action_text, font=("Segoe UI", 8, "bold"),
-                text_color=status_colors.get(job.status, _COLORS["muted"]),
-                width=92, anchor="e",
-            ).pack(side=tk.RIGHT, padx=(8, 0))
-            detail = job.stage or "Aguardando"
-            if job.error:
-                preview = " ".join(job.error.split())
-                limit = 45 if self._desktop_layout else 75
-                if len(preview) > limit:
-                    preview = f"{preview[:limit].rstrip()}…"
-                detail = f"{detail} · {preview}"
-            ctk.CTkLabel(
-                row, text=detail, font=("Segoe UI", 9), text_color=_COLORS["muted"],
-                anchor="w", justify=tk.LEFT, wraplength=content_width,
-            ).pack(fill=tk.X, padx=10, pady=(0, 2))
-            actions = ctk.CTkFrame(row, fg_color="transparent")
-            actions.pack(fill=tk.X, padx=10, pady=(4, 8))
-            if job.status == "running":
-                ctk.CTkButton(
-                    actions, text="Cancelar", command=self._request_cancel_processing, width=76, height=28,
-                    corner_radius=7, fg_color=_theme_color("#3A2637"), hover_color=_theme_color("#573248"), text_color=_COLORS["danger"],
-                    font=("Segoe UI", 9, "bold"),
-                ).pack(side=tk.RIGHT)
-            elif job.status == "queued":
-                ctk.CTkButton(
-                    actions, text="Remover", command=lambda job_id=job.id: self._remove_processing_job(job_id), width=76, height=28,
-                    corner_radius=7, fg_color=_theme_color("#263550"), hover_color=_theme_color("#34476B"), text_color=_COLORS["text"],
-                    font=("Segoe UI", 9, "bold"),
-                ).pack(side=tk.RIGHT)
-            elif job.status == "completed":
-                ctk.CTkButton(
-                    actions, text="Abrir pasta", command=lambda folder=job.output_dir: self._open_folder_path(Path(folder)), width=82, height=28,
-                    corner_radius=7, fg_color=_theme_color("#244462"), hover_color=_theme_color("#315A80"), text_color=_COLORS["text"],
-                    font=("Segoe UI", 9, "bold"),
-                ).pack(side=tk.RIGHT)
-            elif job.status == "warning":
-                ctk.CTkButton(
-                    actions, text="Remover", command=lambda job_id=job.id: self._remove_processing_job(job_id), width=68, height=28,
-                    corner_radius=7, fg_color=_theme_color("#263550"), hover_color=_theme_color("#34476B"), text_color=_COLORS["text"],
-                    font=("Segoe UI", 9, "bold"),
-                ).pack(side=tk.RIGHT, padx=(5, 0))
-                ctk.CTkButton(
-                    actions, text="Ver aviso", command=lambda job_id=job.id: self._show_processing_error(job_id), width=76, height=28,
-                    corner_radius=7, fg_color=_theme_color("#3A2637"), hover_color=_theme_color("#573248"), text_color=_COLORS["warning"],
-                    font=("Segoe UI", 9, "bold"),
-                ).pack(side=tk.RIGHT, padx=(5, 0))
-                if job.summary_failed and (Path(job.output_dir) / "transcription.md").is_file():
-                    ctk.CTkButton(
-                        actions, text="Refazer resumo", command=lambda job_id=job.id: self._retry_warning_summary(job_id), width=108, height=28,
-                        corner_radius=7, fg_color=_theme_color("#244462"), hover_color=_theme_color("#315A80"), text_color=_COLORS["text"],
-                        font=("Segoe UI", 9, "bold"),
-                    ).pack(side=tk.RIGHT, padx=(5, 0))
-                ctk.CTkButton(
-                    actions, text="Abrir pasta", command=lambda folder=job.output_dir: self._open_folder_path(Path(folder)), width=82, height=28,
-                    corner_radius=7, fg_color=_theme_color("#263550"), hover_color=_theme_color("#34476B"), text_color=_COLORS["text"],
-                    font=("Segoe UI", 9, "bold"),
-                ).pack(side=tk.RIGHT, padx=(5, 0))
-            elif job.status in {"failed", "needs_attention", "cancelled"}:
-                ctk.CTkButton(
-                    actions, text="Remover", command=lambda job_id=job.id: self._remove_processing_job(job_id), width=68, height=28,
-                    corner_radius=7, fg_color=_theme_color("#263550"), hover_color=_theme_color("#34476B"), text_color=_COLORS["text"],
-                    font=("Segoe UI", 9, "bold"),
-                ).pack(side=tk.RIGHT, padx=(5, 0))
-                ctk.CTkButton(
-                    actions, text="Tentar de novo", command=lambda job_id=job.id: self._retry_job(job_id), width=92, height=28,
-                    corner_radius=7, fg_color=_theme_color("#244462"), hover_color=_theme_color("#315A80"), text_color=_COLORS["text"],
-                    font=("Segoe UI", 9, "bold"),
-                ).pack(side=tk.RIGHT, padx=(5, 0))
-                if job.error:
-                    ctk.CTkButton(
-                        actions, text="Ver erro", command=lambda job_id=job.id: self._show_processing_error(job_id), width=70, height=28,
-                        corner_radius=7, fg_color=_theme_color("#3A2637"), hover_color=_theme_color("#573248"), text_color=_COLORS["danger"],
-                        font=("Segoe UI", 9, "bold"),
-                    ).pack(side=tk.RIGHT, padx=(5, 0))
-        if not self._desktop_layout:
-            ctk.CTkFrame(self.processing_job_list, height=8, fg_color="transparent").pack(fill=tk.X)
-        if getattr(self, "_current_page", None) == "processing":
-            self._apply_desktop_typography()
-
-    def _set_focus_process_filter(self, selected: str) -> None:
-        self._focus_process_filter.set(selected)
-        self._refresh_focus_processes()
+        self._process_table.layout(self._desktop_layout)
+        self._process_table.render(self._job_store.list())
+        if self._current_page == "processing":
+            self.after_idle(self._fit_process_table)
 
     def _refresh_focus_processes(self) -> None:
-        if not hasattr(self, "_focus_process_list"):
+        self._refresh_processing_page()
+
+    def _fit_process_table(self) -> None:
+        if not hasattr(self, "_process_table") or self._compact_mode:
             return
-        all_jobs = self._job_store.list()
-        counts = {
-            "Todos": len(all_jobs),
-            "Em andamento": sum(job.status == "running" for job in all_jobs),
-            "Aguardando": sum(job.status == "queued" for job in all_jobs),
-            "Exigem atenção": sum(job.status in {"failed", "needs_attention", "warning", "cancelled"} for job in all_jobs),
-            "Concluídos": sum(job.status == "completed" for job in all_jobs),
-        }
-        choice = self._focus_process_filter.get()
-        for label, button in self._focus_process_filter_buttons.items():
-            button.configure(
-                text=f"{label}  {counts[label]}",
-                fg_color=_theme_color("#3A3379") if label == choice else _theme_color("#263550"),
-            )
-        jobs = all_jobs
-        if choice == "Em andamento":
-            jobs = [job for job in jobs if job.status == "running"]
-        elif choice == "Aguardando":
-            jobs = [job for job in jobs if job.status == "queued"]
-        elif choice == "Exigem atenção":
-            jobs = [job for job in jobs if job.status in {"failed", "needs_attention", "warning", "cancelled"}]
-        elif choice == "Concluídos":
-            jobs = [job for job in jobs if job.status == "completed"]
-        jobs.sort(key=lambda job: job.updated_at or job.created_at, reverse=True)
-        if self._focus_selected_job_id not in {job.id for job in jobs}:
-            self._focus_selected_job_id = jobs[0].id if jobs else None
-        for widget in self._focus_process_list.winfo_children():
-            widget.destroy()
-        self._focus_process_rows: dict[str, ctk.CTkFrame] = {}
-        labels = {"running": "Em andamento", "queued": "Aguardando",
-                  "failed": "Falhou", "needs_attention": "Exige atenção",
-                  "warning": "Aviso", "cancelled": "Cancelado", "completed": "Concluído"}
-        for job in jobs:
-            selected = job.id == self._focus_selected_job_id
-            row = ctk.CTkFrame(
-                self._focus_process_list,
-                fg_color=_theme_color("#213251") if selected else _theme_color("#17243A"),
-                corner_radius=8, border_width=1,
-                border_color=_theme_color("#8170E6") if selected else _theme_color("#344867"),
-            )
-            row.pack(fill=tk.X, pady=(0, 7))
-            self._focus_process_rows[job.id] = row
-            marker = ctk.CTkLabel(
-                row, text="", width=9, height=9, corner_radius=5,
-                fg_color={"running": _theme_color("#7665E8"), "queued": _theme_color("#8FA1BC"),
-                          "completed": _theme_color("#55D6A0")}.get(job.status, _theme_color("#F4A7A8")),
-            )
-            marker.pack(side=tk.LEFT, padx=(13, 11), pady=18)
-            body = ctk.CTkFrame(row, fg_color="transparent")
-            body.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=9)
-            title = ctk.CTkLabel(
-                body, text=job.audio_path.stem, font=("Segoe UI", 11, "bold"),
-                text_color=_COLORS["text"], anchor="w",
-            )
-            title.pack(fill=tk.X)
-            stage = ctk.CTkLabel(
-                body, text=job.stage or labels.get(job.status, job.status),
-                font=("Segoe UI", 10), text_color=_COLORS["muted"], anchor="w",
-            )
-            stage.pack(fill=tk.X)
-            state = ctk.CTkLabel(
-                row, text=labels.get(job.status, job.status),
-                font=("Segoe UI", 10, "bold"),
-                text_color=_theme_color("#FFB7AD") if job.status in {"failed", "needs_attention", "cancelled"}
-                else _theme_color("#A4EDCE") if job.status == "completed" else _theme_color("#C5BDFF"),
-            )
-            state.pack(side=tk.RIGHT, padx=13)
-            for widget in (row, marker, body, title, stage, state):
-                widget.bind(
-                    "<Button-1>",
-                    lambda _event, job_id=job.id: self._select_focus_process_job(job_id),
-                    add="+",
-                )
-        if not jobs:
-            ctk.CTkLabel(
-                self._focus_process_list,
-                text="Nenhum processo nesta visão. Escolha outro filtro ou inicie um processamento.",
-                font=("Segoe UI", 11), text_color=_COLORS["muted"],
-            ).pack(anchor=tk.W, pady=18)
-        self._focus_process_selected()
+        available = self._page_viewports["processing"]._parent_canvas.winfo_height()
+        height = max(400, available - (22 if self._maximized else 33))
+        if int(self._process_table.cget("height")) != height:
+            self._process_table.configure(height=height)
 
-    def _focus_selected_job(self) -> ProcessingJob | None:
-        if not self._focus_selected_job_id:
-            return None
-        return next((job for job in self._job_store.list() if job.id == self._focus_selected_job_id), None)
-
-    def _select_focus_process_job(self, job_id: str) -> None:
-        self._focus_selected_job_id = job_id
-        for current_id, row in self._focus_process_rows.items():
-            selected = current_id == job_id
-            row.configure(
-                fg_color=_theme_color("#213251") if selected else _theme_color("#17243A"),
-                border_color=_theme_color("#8170E6") if selected else _theme_color("#344867"),
-            )
-        self._focus_process_selected()
-
-    def _focus_process_selected(self, _event: object = None) -> None:
-        job = self._focus_selected_job()
-        if job is None:
-            self._focus_process_title.set("Nenhum processo nesta visão")
-            self._focus_process_detail.set("Escolha outro filtro ou inicie um processamento.")
-            self._focus_process_state.set("")
-            self._focus_process_stage.set("—")
-            self._focus_process_audio.set("—")
-            self._focus_process_when.set("—")
-            self._focus_process_error_panel.pack_forget()
-            for button in (self._focus_process_retry, self._focus_process_open,
-                           self._focus_process_error, self._focus_process_remove):
-                button.configure(state=tk.DISABLED)
-                button.pack_forget()
+    def _clear_completed_processes(self) -> None:
+        try:
+            count = self._job_store.clear_completed()
+        except OSError as exc:
+            messagebox.showerror("Não foi possível limpar a lista", str(exc), parent=self)
             return
-        self._focus_process_title.set(job.audio_path.stem)
-        state = {
-            "running": "Em andamento", "queued": "Aguardando",
-            "failed": "Falhou", "needs_attention": "Exige atenção",
-            "warning": "Concluído com aviso", "cancelled": "Cancelado", "completed": "Concluído",
-        }.get(job.status, job.status)
-        short_error = " ".join(job.error.split())
-        if len(short_error) > 190:
-            short_error = short_error[:187].rstrip() + "…"
-        self._focus_process_state.set(state)
-        self._focus_process_detail.set(f"Resultado em {Path(job.output_dir).name}")
-        self._focus_process_stage.set(job.stage or "Aguardando")
-        self._focus_process_audio.set("Preservado" if job.audio_path.is_file() else "Indisponível")
-        self._focus_process_when.set(
-            job.updated_at[:16].replace("T", " ") if job.updated_at else "—"
-        )
-        self._focus_process_error_summary.set(short_error)
-        if short_error:
-            if not self._focus_process_error_panel.winfo_manager():
-                self._focus_process_error_panel.pack(
-                    fill=tk.X, padx=14, pady=(0, 10), before=self._focus_process_retry.master,
-                )
-        else:
-            self._focus_process_error_panel.pack_forget()
-        can_retry = (
-            job.status in {"failed", "needs_attention", "cancelled"} and job.audio_path.is_file()
-            or job.summary_failed and (Path(job.output_dir) / "transcription.md").is_file()
-        )
-        for button in (self._focus_process_retry, self._focus_process_open,
-                       self._focus_process_error, self._focus_process_remove):
-            button.pack_forget()
-        if can_retry:
-            self._focus_process_retry.configure(
-                state=tk.NORMAL,
-                text="Refazer resumo" if job.summary_failed else "Tentar novamente",
-            )
-            self._focus_process_retry.pack(side=tk.LEFT)
-        if Path(job.output_dir).is_dir():
-            self._focus_process_open.configure(state=tk.NORMAL)
-            self._focus_process_open.pack(side=tk.LEFT, padx=(8 if can_retry else 0, 0))
-        if job.error:
-            self._focus_process_error.configure(state=tk.NORMAL)
-            self._focus_process_error.pack(side=tk.LEFT, padx=(8, 0))
-        if job.status != "running":
-            self._focus_process_remove.configure(state=tk.NORMAL)
-            self._focus_process_remove.pack(side=tk.RIGHT)
+        self._set_processing_status(f"{count} processo(s) concluído(s) removidos da lista. Arquivos preservados.")
+        self._refresh_processing_page()
 
-    def _focus_retry_job(self) -> None:
-        job = self._focus_selected_job()
+    def _process_table_action(self, operation: str, job_id: str) -> None:
+        job = next((j for j in self._job_store.list() if j.id == job_id), None)
         if job is None:
             return
-        if job.summary_failed and (Path(job.output_dir) / "transcription.md").is_file():
-            self._retry_warning_summary(job.id)
-        else:
-            self._retry_job(job.id)
-
-    def _focus_open_job_folder(self) -> None:
-        job = self._focus_selected_job()
-        if job is not None:
+        if operation == "open":
             self._open_folder_path(Path(job.output_dir))
-
-    def _focus_show_job_error(self) -> None:
-        job = self._focus_selected_job()
-        if job is not None:
-            self._show_processing_error(job.id)
-
-    def _focus_remove_job(self) -> None:
-        job = self._focus_selected_job()
-        if job is not None:
-            self._remove_processing_job(job.id)
+        elif operation == "retry":
+            if job.summary_failed:
+                self._retry_warning_summary(job_id)
+            else:
+                self._retry_job(job_id)
+        elif operation == "details":
+            self._show_processing_error(job_id)
+        elif operation == "cancel" and job.id == self._active_job_id:
+            self._request_cancel_processing()
+        elif operation == "remove" and job.status != "running":
+            self._remove_processing_job(job_id)
 
     def _remove_processing_job(self, job_id: str) -> None:
         job = next((item for item in self._job_store.list() if item.id == job_id), None)
         if job is None or job.status == "running":
             return
         if self._job_store.remove(job_id):
-            self.status.set("Processo removido da lista. O áudio e os documentos foram preservados.")
+            self._set_processing_status("Processo removido da lista. O áudio e os documentos foram preservados.")
             self._refresh_library()
             self._refresh_processing_page()
 
@@ -7806,7 +8632,7 @@ class RecorderApp(ctk.CTk):
         self._library_document_window = window
         window.title("Voice Notes · Documento")
         window.configure(fg_color=_COLORS["bg"])
-        self._fit_dialog(window, 860, 680, 500, 400)
+        self._fit_dialog(window, 860, 680, 720, 480)
         window.transient(self)
         window.protocol("WM_DELETE_WINDOW", self._close_transcript_editor)
 
@@ -7851,6 +8677,13 @@ class RecorderApp(ctk.CTk):
             text_color=_COLORS["text"], font=("Segoe UI", 10, "bold"),
         )
         self.library_copy_button.pack(side=tk.LEFT)
+        self._editor_pdf_button = ctk.CTkButton(
+            editor_actions, text="Abrir PDF", command=self._open_editor_pdf,
+            width=92, height=34, corner_radius=9, fg_color=_theme_color("#263550"),
+            hover_color=_theme_color("#34476B"), text_color=_COLORS["text"],
+            font=("Segoe UI", 10, "bold"),
+        )
+        self._editor_pdf_button.pack(side=tk.LEFT, padx=(7, 0))
         if is_transcript:
             self.library_suggest_names_button.pack(side=tk.LEFT, padx=(7, 0))
         ctk.CTkButton(
@@ -8131,6 +8964,8 @@ class RecorderApp(ctk.CTk):
         self._refresh_compact_controls()
 
     def _start_recording(self) -> None:
+        if self._capture_in_progress():
+            return
         if (getattr(self, "_browser_delete_pending", None) is not None
                 and self._pending_library_delete_blocks(Path(self.output_dir.get() or default_output_dir()))):
             return
@@ -8147,6 +8982,7 @@ class RecorderApp(ctk.CTk):
                 capture_microphone=mode in {"both", "microphone"},
                 capture_system_audio=mode in {"both", "system"},
             )
+            self._close_browser_audio()
             service = RecordingService(
                 config=RecordingConfig(output_dir=Path(self.output_dir.get())),
                 backend=WindowsAudioBackend(backend_config),
@@ -8166,6 +9002,7 @@ class RecorderApp(ctk.CTk):
             return
 
         self._service = service
+        self._recording_failure = ""
         self._sync_recording_meter()
         self._recording_processing_options = {
             "output_mode": self.recording_output_mode.get(),
@@ -8225,6 +9062,10 @@ class RecorderApp(ctk.CTk):
         log("GUI: after(_show_completed) agendado")
 
     def _show_stop_error(self, message: str) -> None:
+        self._started_at = None
+        self._recording_deadline = None
+        self._recording_failure = message
+        self._tray.notify("Gravação interrompida", "A captura parou. Abra o Voice Notes para consultar o erro e verificar o áudio parcial.")
         self.status.set("Falha ao finalizar gravação")
         self._sync_recording_meter()
         self.device_info_text.set("")
@@ -8269,10 +9110,15 @@ class RecorderApp(ctk.CTk):
             )
             return
         self.status.set("Áudio salvo com segurança. Processe-o quando quiser pela Biblioteca.")
+        warning = self._service.capture_warning if self._service is not None else ""
+        if warning:
+            self.status.set("Áudio salvo com aviso de sobrecarga")
+            self._tray.notify("Verifique a gravação", warning)
         self._refresh_library()
         self._set_recording_action_state(start=tk.NORMAL)
         self._set_capture_preferences_state(tk.NORMAL)
         self._refresh_compact_controls()
+        self.after(150, self._run_next_pending_job)
         options = self._recording_processing_options
         if options.get("output_mode") in {"transcription", "both"}:
             queued = self._queue_pipeline(
@@ -8389,8 +9235,8 @@ class RecorderApp(ctk.CTk):
         messagebox.showerror("Download do YouTube não concluído", f"{message}\n\n{_log_hint()}")
 
     def _process_existing_media(self) -> None:
-        path = filedialog.askopenfilename(
-            title="Importar áudio ou vídeo para transcrever",
+        paths = filedialog.askopenfilenames(
+            title="Importar áudios ou vídeos para transcrever",
             filetypes=[
                 ("Áudio e vídeo", "*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.wma *.mp4 *.m4v *.mov *.mkv *.webm *.avi"),
                 ("Arquivos de vídeo", "*.mp4 *.m4v *.mov *.mkv *.webm *.avi"),
@@ -8399,23 +9245,12 @@ class RecorderApp(ctk.CTk):
             ],
             initialdir=self.output_dir.get() or str(Path.home()),
         )
-        if not path:
+        if not paths:
             return
-        mp3_path = Path(path)
-        label = self.file_pipeline_language.get()
-        lang_code = _LANG_CODES.get(label, "pt")
-        model_size = self.file_pipeline_model.get()
-        provider = self._summary_provider_code_for_label(self.file_summary_provider.get())
-        summary_template = self._summary_template_code_for_choice(self.file_processing_profile.get(), "Reunião")
-        transcription_provider = self._transcription_provider_code_for_label(self.file_transcription_source.get())
-        if self._queue_pipeline(
-            mp3_path, lang_code, model_size, provider, summary_template,
-            output_dir=Path(self.output_dir.get() or default_output_dir()),
-            transcription_provider=transcription_provider,
-            separate_speakers=self.file_diarize_speakers.get(),
-            preserve_source=True,
-        ):
-            self._show_page("processing")
+        self._focus_file_paths = tuple(Path(path) for path in paths)
+        self._focus_file_path = self._focus_file_paths[0]
+        self._focus_file_label.set(self._focus_file_path.name if len(paths) == 1 else f"{len(paths)} arquivos selecionados")
+        self._focus_process_file()
 
     def _toggle_text_import(self) -> None:
         if self._text_import_open:
@@ -8491,6 +9326,139 @@ class RecorderApp(ctk.CTk):
             self._toggle_text_import()
         self._open_summary_regeneration_dialog(transcript_path)
 
+    def _batch_options(self, *, imported: bool = False) -> dict[str, object]:
+        if imported:
+            return dict(
+                language=_LANG_CODES.get(self.file_pipeline_language.get(), "pt"),
+                model_size=self.file_pipeline_model.get(),
+                provider=self._summary_provider_code_for_label(self.file_summary_provider.get()),
+                summary_template=self._summary_template_code_for_choice(self.file_processing_profile.get(), "Reunião"),
+                output_mode="transcription" if self.file_output_mode.get() == "Apenas transcrição" else "both",
+                transcription_provider=self._transcription_provider_code_for_label(self.file_transcription_source.get()),
+                separate_speakers=self.file_diarize_speakers.get(),
+            )
+        return dict(
+            language=_LANG_CODES.get(self.pipeline_language.get(), "pt"), model_size=self.pipeline_model.get(),
+            provider=self._selected_summary_provider_code(), summary_template=self._selected_summary_template_code(),
+            output_mode="both", transcription_provider=self._selected_transcription_provider_code(),
+            separate_speakers=self.diarize_speakers.get(),
+        )
+
+    def _batch_unavailable(self, request: QueueRequest, active: set[str]) -> str:
+        path = request.audio
+        if not path.is_file():
+            return "Arquivo não encontrado"
+        if path.suffix.casefold() not in MEDIA_SUFFIXES:
+            return "Formato não compatível com transcrição"
+        if str(path.resolve()).casefold() in active:
+            return "Já está na fila ou em processamento"
+        if self._audio_is_being_written(path):
+            return "Gravação ainda em andamento"
+        naming = self._name_active_audio
+        if naming is not None and (path_is_within(path, naming.parent) or path_is_within(naming.parent, path)):
+            return "Aguardando a revisão do nome desta gravação"
+        deleting = self._browser_delete_pending
+        if deleting is not None and any(path_is_within(target, deleting) or path_is_within(deleting, target)
+                                        for target in (path, request.output)):
+            return "Envio à Lixeira em andamento"
+        topic = self._topic_active_folder
+        if topic is not None and path_is_within(path, topic):
+            return "Gerando a descrição curta desta gravação"
+        return ""
+
+    def _open_batch_review(self, requests: list[QueueRequest], options: dict[str, object], *,
+                           skipped: int = 0, on_added: Callable[[], None] | None = None) -> None:
+        from record_transcript_resume.batch_processing import BatchCandidate, BatchReview, has_saved_results
+        if not requests:
+            messagebox.showinfo("Nenhum áudio selecionado", "Selecione arquivos de áudio ou pastas que contenham áudios diretamente dentro delas.", parent=self)
+            return
+        existing = getattr(self, "_batch_dialog", None)
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            return
+        active = {str(job.audio_path.resolve()).casefold() for job in self._job_store.list() if job.status in {"queued", "running"}}
+        seen, candidates, results_cache = set(), [], {}
+        for request in requests:
+            key = str(request.audio.resolve()).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            reason = self._batch_unavailable(request, active)
+            folder = request.audio.parent.resolve()
+            existing_results = False
+            if not reason and not request.preserve_source:
+                if folder not in results_cache:
+                    results_cache[folder] = has_saved_results(request)
+                existing_results = results_cache[folder]
+            candidates.append(BatchCandidate(request, unavailable=reason, has_results=existing_results))
+        def submit(selected: list[QueueRequest], mode: str) -> bool:
+            choices = dict(options, output_mode=mode)
+            if self._queue_batch(selected, choices):
+                if on_added is not None:
+                    on_added()
+                return True
+            return False
+        self._batch_dialog = BatchReview(
+            self, candidates=candidates, colors=_COLORS,
+            options_text=f"Idioma · {options['language'] or 'Automático'}  ·  Modelo · {options['model_size']}\nResumo com · {options['provider']}  ·  As mesmas opções serão usadas em todos os áudios.",
+            output_mode=str(options["output_mode"]), skipped=skipped, submit=submit,
+        )
+
+    def _queue_batch(self, requests: list[QueueRequest], options: dict[str, object]) -> bool:
+        parent = getattr(self, "_batch_dialog", None) or self
+        transcription_provider = str(options["transcription_provider"])
+        if transcription_provider.startswith("api:") and not self._api_provider_has_token(transcription_provider.removeprefix("api:")):
+            messagebox.showerror("Token ausente", "O provider de transcrição selecionado não possui um token salvo. Configure-o em Ajustes antes de adicionar a seleção à fila.", parent=parent)
+            return False
+        active = {str(job.audio_path.resolve()).casefold() for job in self._job_store.list() if job.status in {"queued", "running"}}
+        ready, ignored = [], []
+        for request in requests:
+            reason = self._batch_unavailable(request, active)
+            if reason:
+                ignored.append(f"{request.audio.name}: {reason}")
+            else:
+                ready.append(request)
+                active.add(str(request.audio.resolve()).casefold())
+        try:
+            added = self._job_store.enqueue_many(ready, **options)
+        except OSError as exc:
+            messagebox.showerror("Não foi possível salvar a fila", f"A seleção não foi adicionada à fila. Os arquivos foram preservados.\n\n{exc}", parent=parent)
+            return False
+        if not added:
+            messagebox.showinfo("Nenhum áudio adicionado", "Todos os arquivos selecionados já estão na fila ou ficaram indisponíveis.\n\n" + "\n".join(ignored[:6]), parent=parent)
+            return False
+        def probe():
+            durations = {}
+            for job in added:
+                try:
+                    duration = media_duration(job.audio_path)
+                    if duration > 0:
+                        durations[job.id] = duration
+                except Exception:
+                    continue
+            if durations:
+                self._post_to_ui(self._on_batch_durations, durations)
+        try:
+            threading.Thread(target=probe, name="batch-audio-durations", daemon=True).start()
+        except RuntimeError:
+            pass  # Duration will also be reported by each pipeline worker.
+        if self._active_job_id is None:
+            self._set_processing_status(f"{len(added)} áudio(s) adicionado(s) à fila")
+        self._refresh_library()
+        self._refresh_processing_page()
+        self._run_next_pending_job()
+        self._show_page("processing")
+        if ignored:
+            messagebox.showinfo("Fila atualizada", f"{len(added)} áudio(s) adicionado(s). {len(ignored)} item(ns) ignorado(s):\n\n" + "\n".join(ignored[:6]), parent=parent)
+        return True
+
+    def _on_batch_durations(self, durations: dict[str, float]) -> None:
+        try:
+            self._job_store.update_durations(durations)
+        except OSError:
+            return
+        self._refresh_processing_page()
+
     def _queue_pipeline(
         self,
         mp3_path: Path,
@@ -8507,11 +9475,16 @@ class RecorderApp(ctk.CTk):
         reuse_source_folder: bool = False,
     ) -> bool:
         """Persist the job before doing any expensive work."""
+        if RecorderApp._name_operation_blocks(self, mp3_path):
+            return False
         if (getattr(self, "_browser_delete_pending", None) is not None
                 and self._pending_library_delete_blocks(mp3_path, output_dir or mp3_path.parent)):
             return False
         if not mp3_path.is_file():
             messagebox.showerror("Áudio não encontrado", f"Não foi possível encontrar:\n{mp3_path}")
+            return False
+        if self._audio_is_being_written(mp3_path):
+            messagebox.showinfo("Gravação em andamento", "Aguarde este áudio terminar de ser salvo antes de processá-lo.", parent=self)
             return False
         transcription_provider = transcription_provider or self._selected_transcription_provider_code()
         separate_speakers = self.diarize_speakers.get() if separate_speakers is None else separate_speakers
@@ -8526,18 +9499,31 @@ class RecorderApp(ctk.CTk):
             transcription_provider, additional_instructions.strip(), separate_speakers, preserve_source,
             reuse_source_folder,
         )
+        self._probe_job_duration(job)
         if additional_instructions.strip():
             self._clear_meeting_instructions()
-        self.status.set(f"Processamento adicionado à fila: {mp3_path.name}")
+        self._set_processing_status(f"Processamento adicionado à fila: {mp3_path.name}")
         self._refresh_library()
         self._refresh_processing_page()
         self._run_next_pending_job()
         return True
 
+    def _probe_job_duration(self, job: ProcessingJob) -> None:
+        def probe():
+            duration = media_duration(job.audio_path)
+            self._post_to_ui(self._on_job_duration, job.id, duration)
+        threading.Thread(target=probe, name="queued-audio-duration", daemon=True).start()
+
+    def _on_job_duration(self, job_id: str | None, duration: float) -> None:
+        if job_id is not None and duration > 0:
+            self._job_store.update(job_id, audio_seconds=duration)
+            self._refresh_processing_page()
+
     def _start_queued_job(self, job: ProcessingJob) -> None:
         step_total = f"1/{self._pipeline_total_steps(job.output_mode, job.separate_speakers)}"
-        self.status.set(f"{step_total} · Preparando processamento")
-        self.last_file.set(job.mp3_path)
+        self._set_processing_status(f"{step_total} · Preparando processamento")
+        if not self._capture_in_progress():
+            self.last_file.set(job.mp3_path)
         self._active_job_id = job.id
         self._start_pipeline(
             job.audio_path,
@@ -8560,15 +9546,28 @@ class RecorderApp(ctk.CTk):
         jobs = self._job_store.recoverable()
         if not jobs:
             return
-        self.status.set(f"Retomando {len(jobs)} tarefa(s) pendente(s)...")
+        self._set_processing_status(f"Retomando {len(jobs)} tarefa(s) pendente(s)...")
         self._refresh_processing_page()
         self._run_next_pending_job()
 
     def _run_next_pending_job(self) -> None:
-        if self._pipeline_thread is not None and self._pipeline_thread.is_alive():
+        if self._queue_retry_after is not None:
+            self.after_cancel(self._queue_retry_after)
+        self._queue_retry_after = None
+        if self._active_job_id is not None or self._pipeline_thread is not None and self._pipeline_thread.is_alive():
             return
         job = next((item for item in self._job_store.list() if item.status == "queued"), None)
         if job is None:
+            return
+        if self._audio_is_being_written(job.audio_path):
+            self._queue_retry_after = self.after(3000, self._run_next_pending_job)
+            return
+        available = memory_headroom()
+        if self._capture_in_progress() and available is not None and available < required_headroom(
+                job.model_size, speakers=job.separate_speakers, local=job.transcription_provider == "local"):
+            self._job_store.update(job.id, stage="Aguardando memória para proteger a gravação")
+            self._refresh_processing_page()
+            self._queue_retry_after = self.after(10000, self._run_next_pending_job)
             return
         self._start_queued_job(job)
 
@@ -8703,6 +9702,8 @@ class RecorderApp(ctk.CTk):
         job_id: str | None = None,
     ) -> None:
         """Regenerate a saved summary, preserving the audio and transcription."""
+        if self._name_operation_blocks(transcript_path.parent):
+            return
         if (getattr(self, "_browser_delete_pending", None) is not None
                 and self._pending_library_delete_blocks(transcript_path.parent)):
             return
@@ -8718,8 +9719,9 @@ class RecorderApp(ctk.CTk):
         if additional_instructions is None:
             additional_instructions = RecorderApp._meeting_instructions(self)
         self.retry_summary_button.configure(state=tk.DISABLED)
-        self.status.set("Gerando nova versão do resumo…")
-        self.last_file.set(str(transcript_path.parent))
+        self._set_processing_status("Gerando nova versão do resumo…")
+        if not self._capture_in_progress():
+            self.last_file.set(str(transcript_path.parent))
         self._show_summary_retry_progress()
         self._pipeline_thread = threading.Thread(
             target=self._retry_summary_worker,
@@ -8756,26 +9758,29 @@ class RecorderApp(ctk.CTk):
 
     def _on_summary_retry_done(self, summary_path: Path, job_id: str | None = None) -> None:
         self._summary_source_path = None
-        self.status.set("Resumo atualizado com sucesso")
+        self._set_processing_status("Resumo atualizado com sucesso")
         if job_id is not None:
             self._job_store.update(job_id, status="completed", stage="Resumo concluído", error="", summary_failed=False)
-        self.last_file.set(str(summary_path.parent))
+        if not self._capture_in_progress():
+            self.last_file.set(str(summary_path.parent))
         self._restore_after_processing()
         self.youtube_process_button.configure(state=tk.NORMAL)
         self.retry_summary_button.configure(state=tk.NORMAL)
         self._refresh_library()
         self._refresh_processing_page()
         self._tray.notify("Resumo concluído", f"Nova versão salva em {summary_path.parent.name}.")
+        self.after(120, self._run_next_pending_job)
 
     def _on_summary_retry_error(self, message: str, job_id: str | None = None) -> None:
         self._summary_source_path = None
-        self.status.set("Não foi possível gerar o resumo")
+        self._set_processing_status("Não foi possível gerar o resumo")
         if job_id is not None:
             self._job_store.update(job_id, status="warning", stage="Resumo ainda pendente", error=message)
             self._refresh_processing_page()
         self._restore_after_processing()
         self.retry_summary_button.configure(state=tk.NORMAL)
         self._tray.notify("Resumo não concluído", "Verifique o provider e tente gerar novamente.")
+        self.after(120, self._run_next_pending_job)
         messagebox.showerror(
             "Nova tentativa não concluída",
             f"{message}\n\nA transcrição foi preservada. Você pode corrigir o login ou trocar o provider e tentar novamente.\n\n{_log_hint()}",
@@ -8787,22 +9792,10 @@ class RecorderApp(ctk.CTk):
         self._refresh_compact_controls()
 
     def _pack_global_processing_feedback(self, *, include_actions: bool = True) -> None:
-        """Place progress before the visible page, including focus-only pages."""
-        anchor = next(
-            (
-                widget for widget in self._container.pack_slaves()
-                if widget not in (self.progressbar, self._processing_actions)
-            ),
-            None,
-        )
-        progress_options: dict[str, object] = {"fill": tk.X, "padx": 20, "pady": (4, 0)}
-        actions_options: dict[str, object] = {"fill": tk.X, "padx": 20, "pady": (7, 0)}
-        if anchor is not None:
-            progress_options["before"] = anchor
-            actions_options["before"] = anchor
-        self.progressbar.pack(**progress_options)
+        """Keep worker controls outside retained pages so navigation cannot hide them."""
         if include_actions:
-            self._processing_actions.pack(**actions_options)
+            self._processing_actions.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=(4, 8), before=self._page_deck)
+        self.progressbar.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=(4, 0), before=self._page_deck)
 
     def _show_cancellable_progress(self) -> None:
         """Expose one deliberate escape route while the isolated worker starts."""
@@ -8830,12 +9823,26 @@ class RecorderApp(ctk.CTk):
         )
         self.library_summary_progressbar.start()
 
+    def _capture_in_progress(self) -> bool:
+        service = getattr(self, "_service", None)
+        finalizing = getattr(self, "_stop_thread", None)
+        return (service is not None and service.state in {RecordingState.RECORDING, RecordingState.FINALIZING}
+                or finalizing is not None and finalizing.is_alive())
+
+    def _audio_is_being_written(self, path: Path) -> bool:
+        if not self._capture_in_progress() or self._service is None:
+            return False
+        current = self._service.current_output_path
+        return current is not None and current.resolve() == path.resolve()
+
     def _set_processing_status(self, status: str) -> None:
-        self.status.set(status)
+        self._processing_status_text = status
+        if not RecorderApp._capture_in_progress(self):
+            self.status.set(status)
         normalized = status.casefold()
         if "resumo" in normalized or "summary" in normalized:
             self._processing_activity = "Gerando resumo"
-        elif "transcri" in normalized or "transcrib" in normalized:
+        elif "transcri" in normalized or "transcrev" in normalized or "transcrib" in normalized:
             self._processing_activity = "Transcrevendo áudio"
         elif "falante" in normalized or "speaker" in normalized:
             self._processing_activity = "Separando falantes"
@@ -8860,6 +9867,7 @@ class RecorderApp(ctk.CTk):
             return
         self._pipeline_process = process
         self.cancel_processing_button.configure(text="Cancelar processamento", state=tk.NORMAL)
+        self._refresh_processing_page()
 
     def _cancel_processing_shortcut(self, _event: tk.Event[tk.Misc] | None = None) -> str | None:
         if self._pipeline_process is None or self._processing_cancel_requested:
@@ -8877,8 +9885,9 @@ class RecorderApp(ctk.CTk):
         ):
             return
         self._processing_cancel_requested = True
+        self._refresh_processing_page()
         self.cancel_processing_button.configure(text="Cancelando…", state=tk.DISABLED)
-        self.status.set("Cancelando processamento — preservando o áudio…")
+        self._set_processing_status("Cancelando processamento — preservando o áudio…")
 
         def stop_worker() -> None:
             from record_transcript_resume.windows_process import terminate_process_tree
@@ -8893,7 +9902,7 @@ class RecorderApp(ctk.CTk):
         threading.Thread(target=stop_worker, daemon=True).start()
 
     def _on_pipeline_cancelled(self, job_id: str | None = None) -> None:
-        self.status.set("Processamento cancelado — áudio preservado")
+        self._set_processing_status("Processamento cancelado — áudio preservado")
         if job_id is not None:
             self._job_store.update(job_id, status="cancelled", stage="Cancelado", error="Interrompido pelo usuário")
         self._active_job_id = None
@@ -8930,6 +9939,7 @@ class RecorderApp(ctk.CTk):
                 self._job_store.update(
                     job_id, status="running",
                     stage=f"1/{total_steps} · Preparando",
+                    started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 )
             self._pipeline_has_speaker_separation = use_speaker_separation
             self._show_cancellable_progress()
@@ -8955,10 +9965,12 @@ class RecorderApp(ctk.CTk):
             log_exception("GUI: ERRO em _start_pipeline", exc)
             self._hide_cancellable_progress()
             self._restore_after_processing()
-            self.status.set("Pipeline error")
+            self._set_processing_status("Falha ao iniciar o processamento")
+            self._active_job_id = None
             if job_id is not None:
                 self._job_store.update(job_id, status="failed", stage="Falhou ao iniciar", error=str(exc))
             messagebox.showerror("Pipeline error", f"{exc}\n\n{_log_hint()}")
+            self.after(150, self._run_next_pending_job)
 
     @staticmethod
     def _pipeline_total_steps(output_mode: str, separate_speakers: bool) -> int:
@@ -9003,7 +10015,7 @@ class RecorderApp(ctk.CTk):
 
         log(f"GUI: _pipeline_worker started | {mp3_path.name} model={model_size} provider={provider}")
 
-        env = os.environ.copy()
+        env = worker_environment(os.environ.copy())
         if diarize_speakers:
             if not huggingface_token.strip():
                 self._post_to_ui(self._on_pipeline_error, "Informe o token gratuito do Hugging Face em Ajustes para separar falantes.", job_id)
@@ -9033,6 +10045,9 @@ class RecorderApp(ctk.CTk):
             cmd = [sys.executable, "-m", "record_transcript_resume._pipeline_proc", *pipeline_args]
 
         try:
+            process_options = hidden_process_kwargs()
+            if os.name == "nt":
+                process_options["creationflags"] = process_options.get("creationflags", 0) | subprocess.BELOW_NORMAL_PRIORITY_CLASS
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -9040,7 +10055,7 @@ class RecorderApp(ctk.CTk):
                 text=True,
                 encoding="utf-8",
                 env=env,
-                **hidden_process_kwargs(),
+                **process_options,
             )
         except Exception as exc:
             log(f"GUI: falha ao lancar subprocess do pipeline: {exc}")
@@ -9072,6 +10087,8 @@ class RecorderApp(ctk.CTk):
             if etype == "status":
                 if callable(on_status):
                     on_status(event.get("msg", ""))
+            elif etype == "metadata":
+                self._post_to_ui(self._on_job_duration, job_id, float(event.get("audio_seconds", 0)))
             elif etype == "done":
                 result_event = event
             elif etype == "error":
@@ -9080,10 +10097,7 @@ class RecorderApp(ctk.CTk):
 
         proc.wait()
 
-        if self._processing_cancel_requested:
-            log("GUI: pipeline cancelado pelo usuário")
-            self._post_to_ui(self._on_pipeline_cancelled, job_id)
-        elif result_event is not None:
+        if result_event is not None:
             from record_transcript_resume.pipeline import PipelineResult
             result = PipelineResult(
                 folder=Path(result_event["folder"]),
@@ -9092,9 +10106,17 @@ class RecorderApp(ctk.CTk):
                 summary_path=Path(result_event["summary"]) if result_event.get("summary") else None,
                 warnings=tuple(str(item) for item in result_event.get("warnings", []) if str(item).strip()),
                 summary_failed=bool(result_event.get("summary_failed", False)),
+                audio_seconds=float(result_event.get("audio_seconds", 0)),
+                processing_seconds=float(result_event.get("processing_seconds", 0)),
+                previous_folder=Path(result_event["previous_folder"]) if result_event.get("previous_folder") else None,
+                content_name=str(result_event.get("content_name", "")),
+                source_folder=Path(result_event["source_folder"]) if result_event.get("source_folder") else None,
             )
             log(f"GUI: pipeline concluido -> {result.folder.name}")
             self._post_to_ui(self._on_pipeline_done, result, job_id)
+        elif self._processing_cancel_requested:
+            log("GUI: pipeline cancelado pelo usuário")
+            self._post_to_ui(self._on_pipeline_cancelled, job_id)
         elif error_msg is not None:
             if error_type:
                 error_msg = f"{error_type}: {error_msg}"
@@ -9110,28 +10132,34 @@ class RecorderApp(ctk.CTk):
 
     def _on_pipeline_done(self, result: object, job_id: str | None = None) -> None:
         from record_transcript_resume.log import log
-        from record_transcript_resume.pipeline import PipelineResult
+        from record_transcript_resume.pipeline import PipelineResult, finalize_content_name
         assert isinstance(result, PipelineResult)
+        result = finalize_content_name(result)
         log(f"GUI: _on_pipeline_done | folder={result.folder.name}")
         self.progressbar.stop()
         self.progressbar.pack_forget()
         completed_stage = self._pipeline_total_steps(self._pipeline_output_mode, self._pipeline_has_speaker_separation)
         if result.warnings:
-            self.status.set(f"Concluído com aviso: {result.folder.name}")
+            self._set_processing_status(f"Concluído com aviso: {result.folder.name}")
             self._tray.notify("Processamento concluído com aviso", result.warnings[0])
         else:
-            self.status.set(f"{completed_stage}/{completed_stage} · Concluído: {result.folder.name}")
-        self.last_file.set(str(result.folder))
+            self._set_processing_status(f"{completed_stage}/{completed_stage} · Concluído: {result.folder.name}")
+        if not self._capture_in_progress():
+            self.last_file.set(str(result.folder))
         if job_id is not None:
             original_job = next((job for job in self._job_store.list() if job.id == job_id), None)
             if original_job is not None:
-                try:
-                    self._library_metadata.transfer(
-                        original_job.audio_path, result.mp3_path,
-                        keep_source=original_job.preserve_source,
-                    )
-                except OSError:
-                    pass
+                if not result.summary_failed and not result.warnings:
+                    try:
+                        self._timing_store.record(
+                            profile_key(original_job.model_size, original_job.transcription_provider,
+                                        original_job.provider, original_job.output_mode,
+                                        original_job.separate_speakers, transcription_threads()),
+                            result.audio_seconds, result.processing_seconds,
+                        )
+                    except OSError:
+                        pass
+                self._apply_processed_paths(original_job, result)
             stage = "Concluído com aviso" if result.warnings else f"{completed_stage}/{completed_stage} · Concluído"
             self._job_store.update(
                 job_id,
@@ -9141,6 +10169,8 @@ class RecorderApp(ctk.CTk):
                 mp3_path=str(result.mp3_path),
                 output_dir=str(result.folder),
                 summary_failed=result.summary_failed,
+                audio_seconds=result.audio_seconds,
+                processing_seconds=result.processing_seconds,
             )
         self._active_job_id = None
         self._restore_after_processing()
@@ -9148,12 +10178,84 @@ class RecorderApp(ctk.CTk):
         self._refresh_processing_page()
         self.after(120, self._run_next_pending_job)
 
+    def _apply_processed_paths(self, original_job: ProcessingJob, result: object) -> None:
+        """Follow automatic names without changing a different recording in progress."""
+        try:
+            RecorderApp._follow_meeting_paths(self, original_job.audio_path, result, keep_source=original_job.preserve_source)
+        except OSError as exc:
+            from record_transcript_resume.log import log
+            log(f"Automatic name: some saved links could not be updated: {exc}")
+            self._tray.notify("Arquivos salvos", "O nome foi aplicado, mas alguns vínculos de organização não puderam ser salvos.")
+
+    def _follow_meeting_paths(self, source: Path, result: object, *, keep_source: bool = False) -> None:
+        """Keep browser state, favorites and process history attached to renamed media."""
+        from record_transcript_resume.pipeline import PipelineResult
+        from record_transcript_resume.log import log
+        assert isinstance(result, PipelineResult)
+        moved_folder = result.previous_folder
+        failures: list[str] = []
+
+        def persist(action: Callable[[], object]) -> None:
+            try:
+                action()
+            except OSError as exc:
+                failures.append(str(exc))
+                log(f"Meeting name: saved link update failed: {exc}")
+
+        def relocated(path: Path) -> Path:
+            if path == source:
+                return result.mp3_path
+            if moved_folder is not None:
+                try:
+                    return result.folder / path.relative_to(moved_folder)
+                except ValueError:
+                    pass
+            return path
+
+        metadata_source = source
+        if moved_folder is not None:
+            metadata_source = result.folder / source.name
+            persist(lambda: self._library_metadata.relocate_tree(moved_folder, result.folder))
+            persist(lambda: self._job_store.relocate_tree(moved_folder, result.folder))
+        persist(lambda: self._library_metadata.transfer(metadata_source, result.mp3_path, keep_source=keep_source))
+        if not keep_source:
+            persist(lambda: self._job_store.relocate_tree(metadata_source, result.mp3_path))
+            root = Path(self.library_dir.get()).expanduser()
+            new_root = relocated(root)
+            if new_root != root:
+                self.library_dir.set(str(new_root))
+                persist(lambda: save_library_directory(str(new_root)))
+            if self._browser_directory is not None:
+                self._browser_directory = relocated(self._browser_directory)
+            self._browser_history = [relocated(path) for path in self._browser_history]
+            if self._browser_selected is not None:
+                self._browser_selected = replace(self._browser_selected, path=relocated(self._browser_selected.path))
+            if hasattr(self, "_browser_selected_paths"):
+                self._browser_selected_paths = {relocated(path) for path in self._browser_selected_paths}
+                anchor = self._browser_selection_anchor
+                self._browser_selection_anchor = relocated(anchor) if anchor is not None else None
+            if not self._capture_in_progress() and self._last_output == source:
+                self._last_output = result.mp3_path
+            if not self._capture_in_progress():
+                last_file = getattr(self, "last_file", None)
+                if last_file is not None and last_file.get() not in {"", "-"}:
+                    current_last = Path(last_file.get())
+                    last_file.set(str(relocated(current_last)))
+            output = getattr(self, "output_dir", None)
+            if output is not None:
+                current_output = Path(output.get()).expanduser()
+                new_output = relocated(current_output)
+                if new_output != current_output:
+                    output.set(str(new_output))
+        if failures:
+            raise OSError("\n".join(dict.fromkeys(failures)))
+
     def _on_pipeline_error(self, message: str, job_id: str | None = None) -> None:
         from record_transcript_resume.log import log
         log(f"GUI: _on_pipeline_error | {message[:120]}")
         self.progressbar.stop()
         self.progressbar.pack_forget()
-        current_stage = self.status.get()
+        current_stage = self._processing_status_text
         active_job = next(
             (job for job in self._job_store.list() if job.id == job_id), None,
         ) if job_id is not None else None
@@ -9166,7 +10268,7 @@ class RecorderApp(ctk.CTk):
             failure_stage = "Falha ao identificar falantes"
         else:
             failure_stage = "Falha no processamento"
-        self.status.set(f"{failure_stage} — áudio preservado")
+        self._set_processing_status(f"{failure_stage} — áudio preservado")
         if job_id is not None:
             self._job_store.update(job_id, status="failed", stage=failure_stage, error=message)
         self._active_job_id = None
@@ -9284,6 +10386,14 @@ class RecorderApp(ctk.CTk):
         return f"{minutes:02d}:{seconds:02d}"
 
     def _refresh_timer(self) -> None:
+        if self._processing_started_at is not None:
+            processing_seconds = int(time.monotonic() - self._processing_started_at)
+            duration = self._format_duration(processing_seconds)
+            activity = self._processing_activity or "Processando"
+            parallel = " · gravação em andamento" if self._started_at is not None else ""
+            self._processing_feedback.set(f"{activity} há {duration}{parallel}.")
+            if hasattr(self, "library_summary_progress_text"):
+                self.library_summary_progress_text.set(f"{activity} · {duration}")
         if self._started_at is not None:
             seconds = int(time.monotonic() - self._started_at)
             minutes, remainder = divmod(seconds, 60)
@@ -9299,14 +10409,7 @@ class RecorderApp(ctk.CTk):
                     self._recording_deadline = None
                     self.after_idle(lambda: self._stop_recording(automatic=True))
         elif self._processing_started_at is not None:
-            seconds = int(time.monotonic() - self._processing_started_at)
-            duration = self._format_duration(seconds)
             self.elapsed.set(duration)
-            activity = self._processing_activity or "Processando"
-            self.recording_limit_hint.set(f"{activity} há {duration} · você pode minimizar ou ocultar o app.")
-            self._processing_feedback.set(f"{activity} em segundo plano há {duration}.")
-            if hasattr(self, "library_summary_progress_text"):
-                self.library_summary_progress_text.set(f"{activity} · {duration} · em segundo plano")
         else:
             self.elapsed.set("00:00")
 
@@ -9344,12 +10447,18 @@ class RecorderApp(ctk.CTk):
             free_mb = free // (1024 * 1024)
             self.disk_warning.set(f"Warning: low disk space — {free_mb} MB available.")
         else:
-            self.disk_warning.set("")
+            self.disk_warning.set(self._service.capture_warning)
 
     def _active_work_description(self) -> str | None:
         """Return the operation that must not be accidentally interrupted."""
         if getattr(self, "_browser_delete_pending", None) is not None:
             return "exclusão de um item"
+        if getattr(self, "_pdf_preview_running", False):
+            return "preparação do PDF"
+        if getattr(self, "_topic_active_folder", None) is not None:
+            return "geração da descrição curta"
+        if getattr(self, "_name_active_audio", None) is not None:
+            return "sugestão de nome da gravação"
         if self._service is not None and self._service.state == RecordingState.RECORDING:
             return "gravação"
         if self._stop_thread is not None and self._stop_thread.is_alive():

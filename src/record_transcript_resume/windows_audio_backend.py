@@ -42,6 +42,13 @@ class WindowsAudioBackend(AudioBackend):
         # Retain a native stream only if its reader refuses to exit. Releasing
         # PortAudio while a read is still active can terminate the whole app.
         self._unreleased_audio: list[tuple[Any, Any, threading.Thread]] = []
+        self._dropped_chunks = 0
+
+    @property
+    def capture_warning(self) -> str:
+        if self._dropped_chunks:
+            return "A captura teve sobrecarga de áudio; alguns trechos podem conter cortes. O áudio disponível foi preservado."
+        return ""
 
     @property
     def eq_levels(self) -> list[float]:
@@ -74,6 +81,7 @@ class WindowsAudioBackend(AudioBackend):
 
         self._stop_event.clear()
         self._error = None
+        self._dropped_chunks = 0
         self._thread = threading.Thread(
             target=self._record_loop,
             args=(output_path, lameenc, numpy, mic_spec, loopback_spec),
@@ -227,10 +235,26 @@ class WindowsAudioBackend(AudioBackend):
         mic_stream = None
         loop_stream = None
         loop_reader: threading.Thread | None = None
-        mic_q: q_module.Queue = q_module.Queue()
-        loop_q: q_module.Queue = q_module.Queue()
+        mic_q: q_module.Queue = q_module.Queue(maxsize=200)
+        loop_q: q_module.Queue = q_module.Queue(maxsize=40)
         mic_buf = numpy.zeros((0, self._config.channels), dtype=numpy.float32)
         loop_buf = numpy.zeros((0, self._config.channels), dtype=numpy.float32)
+
+        def enqueue_audio(queue: q_module.Queue, data: bytes) -> None:
+            try:
+                queue.put_nowait(data)
+            except q_module.Full:
+                # A real-time driver must never wait for inference or encoding.
+                # Retain bounded memory and report the discontinuity explicitly.
+                try:
+                    queue.get_nowait()
+                except q_module.Empty:
+                    pass
+                self._dropped_chunks += 1
+                try:
+                    queue.put_nowait(data)
+                except q_module.Full:
+                    pass
 
         try:
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -238,7 +262,7 @@ class WindowsAudioBackend(AudioBackend):
             # Mic: callback mode (driver delivers ~480-frame chunks at native rate)
             if mic_spec is not None:
                 def _mic_cb(in_data, frame_count, time_info, status):
-                    mic_q.put(bytes(in_data))
+                    enqueue_audio(mic_q, bytes(in_data))
                     return (None, pyaudio.paContinue)
 
                 mic_stream = p.open(
@@ -277,7 +301,7 @@ class WindowsAudioBackend(AudioBackend):
                                 _time.sleep(0.01)
                                 continue
                             data = loop_stream.read(frames, exception_on_overflow=False)
-                            loop_q.put(bytes(data))
+                            enqueue_audio(loop_q, bytes(data))
                         except OSError:
                             break
 
@@ -291,7 +315,7 @@ class WindowsAudioBackend(AudioBackend):
 
             def _drain(q: q_module.Queue, spec: _DeviceSpec, buf: Any) -> Any:
                 parts: list[Any] = []
-                while True:
+                for _ in range(q.maxsize):
                     try:
                         raw = q.get_nowait()
                         part = numpy.frombuffer(raw, dtype=numpy.float32).reshape(-1, spec.channels)
@@ -311,12 +335,15 @@ class WindowsAudioBackend(AudioBackend):
                 while not self._stop_event.is_set():
                     if mic_spec is not None:
                         mic_buf = _drain(mic_q, mic_spec, mic_buf)
+                        if len(mic_buf) > _MAX_LOOP_FRAMES:
+                            self._dropped_chunks += 1
+                            mic_buf = mic_buf[-_MAX_LOOP_FRAMES:].copy()
                     if loopback_spec is not None:
                         loop_buf = _drain(loop_q, loopback_spec, loop_buf)
                         if len(loop_buf) > _MAX_LOOP_FRAMES:
                             excess = len(loop_buf) - _MAX_LOOP_FRAMES
                             _overflow_frames_total += excess
-                            loop_buf = loop_buf[excess:]
+                            loop_buf = loop_buf[excess:].copy()
 
                     any_encoded = False
                     while True:
@@ -382,7 +409,10 @@ class WindowsAudioBackend(AudioBackend):
         except BaseException as exc:
             log_exception(f"ERROR in recording thread (chunk={chunk_count})", exc)
             self._error = exc
+            self._stop_event.set()
         finally:
+            if self._dropped_chunks:
+                log(f"Recording overload | dropped_chunks={self._dropped_chunks}")
             if mic_stream is not None:
                 mic_stream.stop_stream()
                 mic_stream.close()

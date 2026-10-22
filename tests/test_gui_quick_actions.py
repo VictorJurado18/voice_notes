@@ -102,11 +102,12 @@ def test_exported_pdf_is_opened_after_success(monkeypatch, tmp_path: Path) -> No
 
 def test_media_import_uses_the_visible_file_configuration(monkeypatch, tmp_path: Path) -> None:
     video = tmp_path / "reuniao.mp4"
+    video.write_bytes(b"synthetic video")
     chooser: dict[str, object] = {}
 
-    def choose_file(**kwargs: object) -> str:
+    def choose_file(**kwargs: object) -> tuple[str, ...]:
         chooser.update(kwargs)
-        return str(video)
+        return (str(video),)
 
     app = SimpleNamespace(
         output_dir=_Value(str(tmp_path)),
@@ -116,22 +117,26 @@ def test_media_import_uses_the_visible_file_configuration(monkeypatch, tmp_path:
         file_processing_profile=_Value("Entrevista"),
         file_transcription_source=_Value("Whisper local"),
         file_diarize_speakers=_BoolValue(False),
+        file_output_mode=_Value("Transcrição e resumo"),
+        _focus_file_label=Mock(),
         _summary_provider_code_for_label=lambda label: "api:provider-a" if label == "API · Equipe A" else "codex",
         _summary_template_code_for_choice=lambda profile, template: "interview" if profile == "Entrevista" else "meeting",
         _transcription_provider_code_for_label=lambda _label: "local",
         _queue_pipeline=Mock(),
         _show_page=Mock(),
     )
-    monkeypatch.setattr(gui.filedialog, "askopenfilename", choose_file)
+    app._focus_process_file = lambda: RecorderApp._focus_process_file(app)
+    app._clear_focus_file_choice = lambda: RecorderApp._clear_focus_file_choice(app)
+    monkeypatch.setattr(gui.filedialog, "askopenfilenames", choose_file)
 
     RecorderApp._process_existing_media(app)
 
-    assert chooser["title"] == "Importar áudio ou vídeo para transcrever"
+    assert chooser["title"] == "Importar áudios ou vídeos para transcrever"
     assert "*.mp4" in " ".join(pattern for _label, pattern in chooser["filetypes"])
     app._queue_pipeline.assert_called_once_with(
         video, "en", "medium", "api:provider-a", "interview",
         output_dir=tmp_path, transcription_provider="local",
-        separate_speakers=False, preserve_source=True,
+        separate_speakers=False, preserve_source=True, output_mode="both",
     )
     app._show_page.assert_called_once_with("processing")
 
@@ -297,19 +302,19 @@ def test_empty_system_recording_explains_that_no_computer_sound_was_captured(tmp
 
 
 def test_processing_feedback_appears_before_the_visible_page() -> None:
-    anchor = object()
+    deck = object()
     progressbar = Mock()
     actions = Mock()
     app = SimpleNamespace(
-        _container=SimpleNamespace(pack_slaves=Mock(return_value=[anchor])),
+        _page_deck=deck,
         progressbar=progressbar,
         _processing_actions=actions,
     )
 
     RecorderApp._pack_global_processing_feedback(app)
 
-    progressbar.pack.assert_called_once_with(fill=gui.tk.X, padx=20, pady=(4, 0), before=anchor)
-    actions.pack.assert_called_once_with(fill=gui.tk.X, padx=20, pady=(7, 0), before=anchor)
+    progressbar.pack.assert_called_once_with(side=gui.tk.BOTTOM, fill=gui.tk.X, padx=20, pady=(4, 0), before=deck)
+    actions.pack.assert_called_once_with(side=gui.tk.BOTTOM, fill=gui.tk.X, padx=20, pady=(4, 8), before=deck)
 
     progressbar.pack.reset_mock()
     actions.pack.reset_mock()

@@ -27,6 +27,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--themes", nargs="*")
+    parser.add_argument("--pages", nargs="+", choices=("record", "file", "library", "processing", "youtube", "settings"),
+                        help="Capture only selected destinations; the default covers every page.")
     parser.add_argument("--startup-only", action="store_true")
     parser.add_argument("--interactions-only", action="store_true")
     parser.add_argument("--appearance-only", action="store_true")
@@ -93,6 +95,10 @@ def main() -> int:
     def visible_widgets(widget):
         if widget is app._theme_choice_grid or not widget.winfo_ismapped():
             return
+        # Retained native pages remain mapped behind the raised opaque page.
+        # They are not visible pixels and must not be audited as the front page.
+        if getattr(widget, "_voice_page", app._current_page) != app._current_page:
+            return
         yield widget
         if hasattr(widget, "_apply_appearance_mode") and not isinstance(
             widget, (ctk.CTk, ctk.CTkToplevel, ctk.CTkFrame, ctk.CTkScrollableFrame)
@@ -146,8 +152,80 @@ def main() -> int:
         filename = f"{theme}--{mode}--{page}.png"
         image = ImageGrab.grab(bbox=(x, y, x + width, y + height), all_screens=True, include_layered_windows=True)
         image.save(output / filename)
+        # A correct color binding does not prove the text was painted. Catch
+        # native copied-scroll pixels that can leave fully visible labels blank.
+        text_checks = 0
+        for widget in visible_widgets(target):
+            if not isinstance(widget, ctk.CTkLabel):
+                continue
+            native = getattr(widget, "_label", None)
+            if native is None or len(str(native.cget("text")).strip()) < 3:
+                continue
+            left, top = native.winfo_rootx(), native.winfo_rooty()
+            right, bottom = left + native.winfo_width(), top + native.winfo_height()
+            clip = [x, y, x+width, y+height]
+            parent = native.master
+            while parent is not None and parent is not target:
+                px, py = parent.winfo_rootx(), parent.winfo_rooty()
+                clip = [max(clip[0],px),max(clip[1],py),
+                        min(clip[2],px+parent.winfo_width()),min(clip[3],py+parent.winfo_height())]
+                parent = parent.master
+            if (right-left < 10 or bottom-top < 8 or left < clip[0] or top < clip[1]
+                    or right > clip[2] or bottom > clip[3]):
+                continue
+            foreground = tuple(channel//257 for channel in native.winfo_rgb(native.cget("fg")))
+            crop = image.crop((left-x,top-y,right-x,bottom-y)).convert("RGB")
+            pixels = crop.get_flattened_data() if hasattr(crop,"get_flattened_data") else crop.getdata()
+            if not any(all(abs(pixel[i]-foreground[i]) <= 20 for i in range(3)) for pixel in pixels):
+                failures.append(f"Visible text not painted: {theme}/{mode}/{page}: {native.cget('text')!r}")
+            text_checks += 1
+        control_checks = 0
+        for widget in visible_widgets(target):
+            if not isinstance(widget, (ctk.CTkRadioButton, ctk.CTkFrame)):
+                continue
+            # This Frame subclass is a composite whose child buttons draw its
+            # outline. Its inherited backing canvas intentionally has no border.
+            if isinstance(widget, ctk.CTkSegmentedButton):
+                continue
+            if isinstance(widget, ctk.CTkFrame) and not widget.cget("border_width"):
+                continue
+            canvas = getattr(widget, "_canvas", None)
+            if canvas is None or not canvas.winfo_ismapped():
+                continue
+            left, top = canvas.winfo_rootx(), canvas.winfo_rooty()
+            right, bottom = left + canvas.winfo_width(), top + canvas.winfo_height()
+            if left < x or top < y or right > x+width or bottom > y+height:
+                continue
+            parent = canvas.master
+            clipped = False
+            while parent is not None and parent is not target:
+                px, py = parent.winfo_rootx(), parent.winfo_rooty()
+                if left < px or top < py or right > px+parent.winfo_width() or bottom > py+parent.winfo_height():
+                    clipped = True
+                    break
+                parent = parent.master
+            if clipped:
+                continue
+            colors = [widget.cget("border_color")]
+            if isinstance(widget, ctk.CTkRadioButton):
+                colors.append(widget.cget("fg_color"))
+            expected = [tuple(c//257 for c in widget.winfo_rgb(widget._apply_appearance_mode(color))) for color in colors if color != "transparent"]
+            crop = image.crop((left-x,top-y,right-x,bottom-y)).convert("RGB")
+            if isinstance(widget, ctk.CTkFrame):
+                # Inspect the border itself: labels inside a missing card may
+                # still contain the same palette color and mask the defect.
+                cw, ch = crop.size
+                edges = [crop.crop(box) for box in ((0,0,cw,min(3,ch)), (0,max(0,ch-3),cw,ch),
+                         (0,0,min(3,cw),ch), (max(0,cw-3),0,cw,ch))]
+                pixels = [pixel for edge in edges for pixel in (edge.get_flattened_data() if hasattr(edge,"get_flattened_data") else edge.getdata())]
+            else:
+                pixels = crop.get_flattened_data() if hasattr(crop,"get_flattened_data") else crop.getdata()
+            if not any(any(all(abs(pixel[i]-color[i]) <= 20 for i in range(3)) for color in expected) for pixel in pixels):
+                failures.append(f"Control border not painted: {theme}/{mode}/{page}: {widget}")
+            control_checks += 1
         captures.append(dict(theme=theme, mode=mode, page=page, file=filename,
-                             width=width, height=height, checked_widgets=native_checks()))
+                             width=width, height=height, checked_widgets=native_checks(),
+                             checked_text_pixels=text_checks, checked_control_pixels=control_checks))
         print(f"CAPTURE {len(captures):03d} {filename} {width}x{height}", flush=True)
 
     steps = []
@@ -172,7 +250,7 @@ def main() -> int:
         for mode in ("focus", "fullscreen"):
             if mode == "fullscreen":
                 add_action("fullscreen", lambda: app.maximize_button.invoke(), 280)
-            for page in ("record", "file", "library", "processing", "youtube", "settings"):
+            for page in args.pages or ("record", "file", "library", "processing", "youtube", "settings"):
                 add_action(f"page:{page}", lambda p=page: app._page_buttons[p].invoke())
                 if page == "settings":
                     for section in app._settings_section_buttons:

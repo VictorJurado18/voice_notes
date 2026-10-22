@@ -83,12 +83,12 @@ class TestPipelineProcProtocol(unittest.TestCase):
             mp3 = Path(tmp) / "fake.mp3"
             mp3.touch()
 
-            fake_result = MagicMock()
-            fake_result.folder = Path(tmp) / "pasta"
-            fake_result.mp3_path = mp3
-            fake_result.transcript_path = Path(tmp) / "transcription.md"
-            fake_result.summary_path = Path(tmp) / "summary.md"
-            fake_result.summary_failed = False
+            from record_transcript_resume.pipeline import PipelineResult
+            fake_result = PipelineResult(
+                folder=Path(tmp) / "pasta", mp3_path=mp3,
+                transcript_path=Path(tmp) / "transcription.md",
+                summary_path=Path(tmp) / "summary.md",
+            )
 
             # Patch pipeline.run inside the subprocess's import by injecting
             # a wrapper script that overrides the function before calling main().

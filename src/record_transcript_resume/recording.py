@@ -75,6 +75,10 @@ class RecordingService:
         return None
 
     @property
+    def capture_warning(self) -> str:
+        return getattr(self._backend, "capture_warning", "")
+
+    @property
     def is_backend_alive(self) -> bool:
         from record_transcript_resume.windows_audio_backend import WindowsAudioBackend
         if isinstance(self._backend, WindowsAudioBackend):
