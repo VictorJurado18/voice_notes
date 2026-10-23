@@ -1,338 +1,86 @@
 # Voice Notes
 
-O Voice Notes é um widget para Windows que grava reuniões, aulas e chamadas, transforma o áudio em texto no próprio computador e cria resumos em português. Também processa arquivos de áudio, transcrições prontas e vídeos do YouTube que você tenha autorização para usar.
+<img src="assets/voice-notes.png" alt="Ícone do Voice Notes" width="80">
 
----
+**Grave, transcreva e organize suas conversas em um só lugar.** O Voice Notes é um aplicativo para Windows que captura o microfone, o som do computador ou ambos. A transcrição é feita localmente com Whisper; se você quiser um resumo, pode conectar Codex, Claude Code ou uma API de IA.
 
-## Comece por aqui — guia para usar o aplicativo
+[Baixar o instalador](https://github.com/VictorJurado18/voice-notes-releases/releases/latest) · [Como começar](#primeiros-passos) · [Resolver problemas](#se-algo-não-funcionar) · [Desenvolvimento](DEVELOPMENT.md)
 
-Você não precisa instalar Python, abrir terminal ou criar uma conta técnica para gravar e transcrever. Siga os passos abaixo.
+## O que você pode fazer
 
-### 1. Baixar e instalar
-
-1. Baixe o arquivo mais recente `VoiceNotes-Setup-x.y.z.exe` nas [Releases públicas](https://github.com/VictorJurado18/voice-notes-releases/releases). Não baixe o código-fonte (`.zip`) para instalar o aplicativo.
-2. Clique duas vezes no instalador baixado.
-3. Mantenha marcada a opção **Iniciar automaticamente com o Windows** se quiser deixar o widget sempre disponível perto do relógio.
-4. Mantenha marcada a opção de instalar **Codex CLI e Claude Code** se quiser usar um deles para criar resumos. A preparação pode levar alguns minutos e requer internet.
-5. Clique em **Instalar** e, ao terminar, em **Abrir o widget Voice Notes**.
-
-O aplicativo é instalado só para o seu usuário, em `%LOCALAPPDATA%\Programs\Voice Notes`. Não exige conta de administrador, Python ou uma `.venv` no computador de destino.
-
-Quando houver uma nova versão publicada nas [Releases públicas de distribuição](https://github.com/VictorJurado18/voice-notes-releases/releases), o Voice Notes avisa em **Ajustes** › **Atualizações**. Você pode escolher **Atualizar agora** para baixar o instalador, verificar sua integridade, fechar o widget e iniciar a versão nova sem usar terminal.
-
-Após atualizar, **O que há de novo** aparece uma vez por versão, quando a janela normal estiver visível e o aplicativo estiver livre. Iniciar oculto ou gravar não consome o aviso: ele aguarda. Consulte os destaques novamente em **Ajustes** › **Atualizações** › **O que há de novo**. As informações acompanham o instalador e podem ser lidas sem internet. Na primeira instalação, o aviso automático não é exibido.
-
-A busca por atualizações ocorre automaticamente ao abrir e a cada **4 horas**, em segundo plano. Quando há uma versão nova, aparece um botão discreto **Atualizar** no topo; no modo compacto, uma seta **↑**. Ambos abrem **Ajustes** › **Atualizações**, sem iniciar a instalação. Se a consulta falhar, o app tenta novamente após **15 minutos** e mantém o aviso de uma atualização que já havia sido confirmada. **Verificar agora** continua disponível.
-
-> O Windows pode mostrar uma tela de proteção ao abrir um instalador ainda não reconhecido. Confira se o arquivo veio da fonte esperada antes de escolher qualquer opção para continuar.
-
-### 2. Encontrar e mover o widget
-
-O Voice Notes funciona como um widget, sem a barra branca tradicional das janelas do Windows.
-
-- Arraste a área superior para mover o widget pela tela.
-- A janela usa tamanhos fixos: modo foco, tela cheia e modo compacto. Não é necessário ajustar o tamanho arrastando as bordas.
-- Clique em **Tela cheia** ou pressione **F11** para ocupar o monitor atual; **Restaurar** ou **F11** retorna ao tamanho anterior.
-- Quando uma página tiver mais opções do que a altura disponível, role o conteúdo dentro do widget. O cabeçalho, a navegação e os botões de gravar/parar permanecem acessíveis.
-- Clique em **Minimizar** para transformar o app em uma etiqueta discreta. Ela reduz no mesmo local do widget, continua sobre os outros programas, mostra o estado e o nível de áudio e oferece **Iniciar** e **Parar**.
-- Arraste a área informativa da etiqueta para movê-la. Um clique curto nessa área restaura o widget completo no tamanho anterior.
-- Clique em **Ocultar** para escondê-lo de verdade e continuar usando o menu do ícone do Voice Notes perto do relógio. Ele pode estar dentro da seta `^` de **itens ocultos**.
-- O menu do ícone na bandeja permite mostrar, ocultar ou encerrar o aplicativo.
-
-### 3. Escolher como o resumo será criado
-
-A transcrição é feita localmente pelo Whisper; ela funciona mesmo antes de você configurar uma IA de resumo. Para gerar resumos, abra **Ajustes** › **Provider e API** e escolha uma opção:
-
-| Opção | Quando escolher | Primeiro uso |
-|---|---|---|
-| **Codex** | Você usa uma conta OpenAI/Codex. | Clique em **Conectar conta no navegador**; nenhuma janela de terminal é aberta. |
-| **Claude Code** | Você usa uma conta Claude Code. | Clique em **Conectar conta no navegador**; nenhuma janela de terminal é aberta. |
-| **API por token** | Você tem uma chave de uma API de IA. | Clique em **+ Novo Provider**, informe nome, URL, modelo e token. |
-
-O Codex é a opção inicial. O login pertence ao provider escolhido; o Voice Notes não pede sua senha dentro do widget nem abre uma janela preta de terminal.
-
-Em **Ajustes** › **Provider e API**, use **Testar** para confirmar que Codex ou Claude Code conseguem gerar uma resposta. Esse teste envia um texto sintético curto e pode consumir uso da conta.
-
-Para APIs compatíveis com OpenAI, basta informar a URL base, o modelo e o token. Para outros serviços JSON, abra **Opções avançadas** e informe o formato da requisição e o caminho da resposta. O token é salvo no **Cofre de Credenciais do Windows**, não no arquivo de configuração.
-
-### 4. Fazer a primeira gravação
-
-1. Abra a página **Gravar**.
-2. Em **Fonte de áudio**, escolha:
-   - **Microfone + sistema** para registrar sua voz e o som do computador;
-   - **Microfone** para registrar apenas sua voz;
-   - **Sistema** para registrar apenas o som reproduzido pelo Windows.
-3. Em **Salvar em**, confira a pasta ou clique em **Alterar**. Por padrão, os arquivos vão para `Música\record-transcript-resume`.
-4. Em **Depois de parar**, escolha **Salvar só o áudio** (padrão), **Áudio + transcrição** ou **Áudio + transcrição + resumo**. O áudio sempre é salvo antes de qualquer processamento.
-5. Se escolher **Áudio + transcrição + resumo**, aparecem o **Formato do resumo** e as instruções opcionais. Há formatos para reunião, aula, entrevista, call comercial, brainstorm, resumo executivo, estudo e plano de ação.
-6. Se desejar, defina **Parar após** um número de minutos ou horas. Deixe vazio para gravar até você parar manualmente.
-7. Clique em **Iniciar gravação**.
-8. Ao terminar, clique em **Parar** ou aguarde o tempo programado.
-
-Se você escolheu transcrever ou resumir após parar, o widget abre **Processos** e mostra as etapas. Você pode ocultá-lo durante o processamento: o trabalho continua em segundo plano. Com **Salvar só o áudio**, processe a gravação depois pela **Biblioteca**. Se você tentar encerrar o aplicativo durante uma gravação, transcrição ou resumo, ele será protegido e irá para a bandeja em vez de perder o trabalho.
-
-Cada gravação ganha uma pasta própria desde o início. O áudio é salvo nela ao parar; transcrição e resumo aparecem na mesma pasta quando o processamento termina:
-
-```text
-Música\record-transcript-resume\recording-AAAAMMDD-HHMMSS\
-    recording-AAAAMMDD-HHMMSS.mp3
-    transcription.md  (quando criada)
-    summary.md        (quando criado)
-```
-
-### 5. Escolher a qualidade da transcrição
-
-Em **Ajustes** › **Transcrição**, escolha o idioma e o modelo Whisper. No primeiro uso de cada modelo, ele será baixado e ficará guardado no computador.
-
-| Modelo | Melhor para | Observação curta |
-|---|---|---|
-| `tiny` | Testes | Muito rápido, menos preciso. |
-| `base` | Áudio simples | Rápido e básico. |
-| `small` | Reuniões do dia a dia | Equilíbrio recomendado. |
-| `medium` | Áudio difícil | Mais preciso, mais lento. |
-| `large-v3` | Maior qualidade | Mais pesado e demorado. |
-
-Na mesma página, **Testar modelo** verifica se o modelo selecionado carrega e processa um áudio silencioso temporário. O primeiro teste pode baixar o modelo. O resultado aparece junto ao botão.
-
-Em computadores com uma GPU NVIDIA compatível, o Voice Notes tenta acelerar a transcrição automaticamente. O instalador inclui as bibliotecas CUDA necessárias; se a GPU estiver indisponível, sem memória suficiente ou ocorrer um erro no processamento, o app repete a transcrição na CPU. **Testar modelo** informa qual dispositivo processou o teste. GPUs AMD e Intel continuam usando a CPU nesta versão.
-
-### 6. Separar as pessoas que falaram
-
-O Voice Notes pode identificar blocos como **Pessoa 1**, **Pessoa 2** e assim por diante. Ele não adivinha nomes por conta própria, mas a Biblioteca pode sugerir uma troca quando uma autoapresentação for muito clara — você sempre confirma antes de aplicar.
-
-Para ativar essa opção:
-
-1. Crie uma conta gratuita no Hugging Face.
-2. Acesse [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) e aceite as condições de uso do modelo.
-3. Crie um token de leitura no Hugging Face.
-4. No Voice Notes, abra **Ajustes** › **Falantes**, cole o token e habilite **Separar falantes**. Use **Mostrar/Ocultar**, **Copiar** e **Salvar token** quando precisar conferir ou reutilizar a chave.
-
-O modelo é baixado e executado localmente. O token fica no Cofre de Credenciais do Windows. Se um token autorizado já estiver salvo, a separação vem habilitada por padrão.
-
-### 7. Processar algo que você já possui
-
-Use a página certa para cada situação:
-
-| Você tem… | Onde ir | O que fazer |
-|---|---|---|
-| Um MP3, WAV, M4A ou outro áudio | **Arquivo** | Importe o áudio; o Voice Notes cria a transcrição e o resumo. |
-| Um texto já transcrito | **Arquivo** | Cole o texto ou abra um arquivo `.txt`/`.md`, depois gere somente o resumo. |
-| Um vídeo do YouTube autorizado | **YouTube** | Cole o link — com ou sem `https://` — e escolha transcrição e resumo, só transcrição ou só resumo. |
-| Uma transcrição/resumo que deseja corrigir | **Biblioteca** | Abra o documento, edite, salve e use **Salvar e gerar resumo**. |
-
-Na **Biblioteca**, use **Pasta exibida › Escolher pasta** para consultar gravações de outro local, inclusive uma pasta de gravação individual. Essa escolha é lembrada ao reiniciar e não muda o destino das novas gravações. **Pasta de Gravar** volta a acompanhar o destino configurado na aba Gravar. Também é possível abrir a pasta de resultados e exportar o documento aberto para **DOCX** ou **PDF**. Ao importar um áudio ou vídeo, o Voice Notes preserva o arquivo original e cria uma cópia na pasta de resultados escolhida.
-
-Use a busca por título ou arquivo, filtre por etiqueta, marque favoritos e ajuste o título e as etiquetas para organizar as gravações. A Biblioteca mostra áudio, transcrição e resumo como partes de uma mesma gravação, com a ação disponível junto de cada parte. Os filtros incluem favoritos e estado do resumo. Pastas criadas por versões anteriores continuam acessíveis, inclusive resultados aninhados; a atualização não move arquivos antigos. Em **Processos**, os cinco resultados concluídos mais recentes podem ser abertos diretamente. Falhas e resultados com aviso continuam visíveis, com detalhes e ação para refazer um resumo pendente. Remover um processo da lista não apaga o áudio nem os documentos salvos.
-
-Em **Ajustes** › **Verificação**, confira se a pasta de saída aceita gravações, se o microfone e o áudio do sistema estão disponíveis e se Codex e Claude Code estão conectados. Os botões de teste do Whisper e de geração de resposta são separados: o primeiro pode baixar um modelo, e os testes dos providers podem consumir uso da conta.
-
-Na página **YouTube**, a opção **Só resumo** ainda transcreve o áudio localmente para ter conteúdo para resumir, mas não guarda o arquivo `transcription.md`. Escolha **Só transcrição** se não quiser enviar texto a um provider de IA.
-
-### 8. Resolver problemas comuns
-
-#### O widget não aparece
-
-Procure o ícone do Voice Notes perto do relógio do Windows, inclusive dentro de `^` (**itens ocultos**), e dê dois cliques nele. Se o ícone não estiver lá, abra **Voice Notes** pelo menu Iniciar.
-
-#### A transcrição terminou, mas não houve resumo
-
-Abra **Ajustes** › **Provider e API** e confirme o provider. Se for necessário entrar na conta, conclua o login no Prompt de Comando aberto. Depois abra **Arquivo** ou **Biblioteca** e use a opção para tentar o resumo novamente. A transcrição é preservada mesmo quando o resumo falha.
-
-#### A transcrição falhou
-
-Abra **Processos** e selecione **Ver erro** para conferir a etapa, a mensagem completa e o caminho do log. Em **Ajustes** › **Transcrição**, use **Testar modelo** para verificar o Whisper escolhido. Se o modelo não puder ser aberto, confira a conexão com a internet e o espaço livre antes de tentar novamente.
-
-#### Não foi possível separar os falantes (erro 403)
-
-Seu token ainda não tem permissão para o modelo do Hugging Face. Acesse a página do modelo, aceite as condições, aguarde a aprovação se ela for solicitada e use um novo token de leitura.
-
-#### O áudio do sistema não foi gravado
-
-Confirme que existe um dispositivo de saída ativo no Windows e que você escolheu **Sistema** ou **Microfone + sistema**. Em chamadas, confira se o programa de reunião está reproduzindo som no dispositivo de saída padrão.
-
-#### Não quero abrir junto com o Windows
-
-Execute o instalador novamente e desmarque **Iniciar automaticamente com o Windows**, ou remova o atalho `Voice Notes` da pasta:
-
-```text
-%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
-```
-
-#### Onde fica o log técnico?
-
-O log fica em `%LOCALAPPDATA%\Voice Notes\recorder.log`. Anexe esse arquivo ao relatar um erro; evite enviar áudios ou transcrições confidenciais sem necessidade.
-
-### Privacidade e uso responsável
-
-- O áudio é gravado e transcrito localmente no computador.
-- Para gerar um resumo, somente o texto transcrito é enviado ao Codex, Claude Code ou à API que você escolheu.
-- Ao usar YouTube, o aplicativo acessa o link informado para baixar o áudio. Processe somente conteúdo próprio, público ou autorizado.
-- Os arquivos produzidos ficam na pasta escolhida por você.
-- Antes de processar conteúdo sensível, leia as políticas do provider de IA escolhido.
-
----
-
-## Referência técnica — para desenvolvimento e manutenção
-
-### Visão geral da arquitetura
-
-```text
-Microfone / áudio do sistema / arquivo / YouTube
-                    │
-                    ▼
-             MP3 ou áudio de entrada
-                    │
-                    ▼
-     Whisper local (faster-whisper / CTranslate2)
-                    │
-                    ├── opcional: diarização local com pyannote
-                    ▼
-             transcription.md
-                    │
-                    ▼
- Codex CLI / Claude Code / API JSON configurável
-                    │
-                    ▼
-               summary.md
-```
-
-O processo pesado de transcrição e resumo roda em um subprocesso separado. Assim, uma falha nativa do modelo não encerra diretamente a interface. Trabalhos pendentes são armazenados no diretório de dados do aplicativo e podem ser retomados quando o MP3 original ainda existir.
-
-### Tecnologias principais
-
-| Componente | Uso |
+| Recurso | O que faz |
 |---|---|
-| Python 3.12+ | Aplicação e ferramentas de desenvolvimento. |
-| CustomTkinter + Tk | Widget sem borda, páginas e controles. |
-| PyAudioWPatch | Microfone e loopback de áudio do Windows. |
-| faster-whisper / CTranslate2 | Transcrição local; CUDA em GPUs NVIDIA compatíveis, com alternativa automática na CPU. |
-| pyannote.audio | Diarização opcional de falantes. |
-| Codex CLI / Claude Code | Providers de resumo via login do usuário. |
-| `urllib` + Keyring | Provider por token e armazenamento seguro de credenciais. |
-| yt-dlp + imageio-ffmpeg | Download autorizado de áudio do YouTube. |
-| python-docx + ReportLab | Exportação para DOCX e PDF. |
-| PyInstaller + Inno Setup | Empacotamento e instalador para Windows. |
+| **Gravar** | Capture reuniões, aulas e chamadas usando microfone, áudio do sistema ou os dois. |
+| **Transcrever** | Transforme áudio em texto no próprio computador, com aceleração por GPU NVIDIA compatível quando disponível. |
+| **Resumir** | Gere resumos em formatos como reunião, aula, entrevista e plano de ação. |
+| **Importar** | Processe arquivos de áudio, transcrições prontas e vídeos do YouTube que você tenha autorização para usar. |
+| **Organizar** | Encontre gravações na Biblioteca, edite documentos e exporte em PDF ou DOCX. |
 
-### Requisitos de desenvolvimento
+Funciona no **Windows 10 ou 11, 64 bits**. Para usar o instalador, você não precisa instalar Python nem abrir um terminal. O primeiro uso de um modelo Whisper precisa de internet para baixá-lo. Consulte as notas da versão publicada para conferir os recursos disponíveis no instalador.
 
-| Ferramenta | Requisito |
-|---|---|
-| Sistema operacional | Windows 10 ou 11, 64 bits |
-| Python | 3.12 ou superior |
-| Inno Setup | 6, apenas para gerar o instalador |
-| Internet | Dependências, modelos Whisper, CLIs e YouTube |
+## Primeiros passos
 
-### Preparar o ambiente
+1. Baixe `VoiceNotes-Setup-x.y.z.exe` na [página de versões](https://github.com/VictorJurado18/voice-notes-releases/releases/latest) e execute o instalador. Escolha a instalação opcional de Codex CLI e Claude Code se quiser criar resumos com um deles.
+2. Abra **Voice Notes** pelo menu Iniciar. Na página **Gravar**, escolha a **Fonte de áudio** e confira a pasta em **Salvar em**.
+3. Em **Depois de parar**, escolha **Salvar só o áudio**, **Áudio + transcrição** ou **Áudio + transcrição + resumo**. Clique em **Iniciar gravação** e, quando terminar, em **Parar**.
 
-```powershell
-git clone <URL_DO_REPOSITORIO>
-cd voice_recorder_ai
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_windows.ps1
-```
+O áudio é salvo antes de começar a transcrição ou o resumo. Se você escolher processar depois da gravação, acompanhe as etapas em **Processos**; pode ocultar a janela enquanto o trabalho continua. Uma gravação salva só como áudio pode ser processada mais tarde pela **Biblioteca**.
 
-O script cria `.venv` e instala as dependências. Para executar a interface a partir do código:
-
-```powershell
-$env:PYTHONPATH = "src"
-.\.venv\Scripts\python.exe -m record_transcript_resume.gui
-```
-
-Atalhos úteis no repositório:
-
-| Arquivo | Uso |
-|---|---|
-| `Open Recorder.vbs` | Abre o widget sem terminal. |
-| `Open Recorder.bat` | Abre o widget com terminal para diagnóstico. |
-| `Open Widget.vbs` | Atalho equivalente para o widget. |
-| `Record.bat` | Gravação guiada pelo terminal. |
-| `Build Installer.bat` | Gera o executável e o instalador. |
-
-### Linha de comando
-
-Execute os comandos abaixo na raiz do repositório:
-
-```powershell
-$env:PYTHONPATH = "src"
-```
-
-```powershell
-# Gravar 20 segundos usando microfone e sistema
-.\.venv\Scripts\python.exe -m record_transcript_resume.cli record --duration 20
-
-# Gravar apenas o microfone
-.\.venv\Scripts\python.exe -m record_transcript_resume.cli record --duration 20 --microphone-only
-
-# Processar um MP3 existente com Codex
-.\.venv\Scripts\python.exe -m record_transcript_resume.cli process .\reuniao.mp3 --language pt --model small --provider codex
-
-# Processar com Claude Code
-.\.venv\Scripts\python.exe -m record_transcript_resume.cli process .\reuniao.mp3 --language pt --model small --provider claude
-```
-
-Opções relevantes:
-
-| Comando | Opção | Descrição |
-|---|---|---|
-| `record` | `--output-dir <pasta>` | Pasta de saída. |
-| `record` | `--duration <segundos>` | Duração fixa. |
-| `record` | `--microphone-only` | Captura apenas o microfone. |
-| `record` | `--system-only` | Captura apenas o áudio do sistema. |
-| `record` | `--no-pipeline` | Não transcreve nem resume ao encerrar. |
-| `record` / `process` | `--provider codex\|claude\|api` | Provider do resumo. `api` usa a configuração e o token já salvos pelo widget. |
-| `process` | `--language <código>` | Ex.: `pt`, `en`, `es`. |
-| `process` | `--model <modelo>` | Ex.: `small`, `medium`, `large-v3`. |
-
-### Testes
-
-```powershell
-$env:PYTHONPATH = "src"
-.\.venv\Scripts\python.exe -m pytest -q
-```
-
-### Gerar o instalador
-
-Com o Inno Setup 6 instalado na máquina de desenvolvimento:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_installer.ps1
-```
-
-Ou use `Build Installer.bat`. O processo gera um executável autocontido com PyInstaller e depois o instalador Inno Setup em `dist\VoiceNotes-Setup.exe`. A máquina de destino não precisa de Python nem de `.venv`.
-
-Para gerar somente a pasta do aplicativo, sem compactar o instalador:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_installer.ps1 -SkipInstaller
-```
-
-### Checklist de release
-
-Antes de distribuir uma versão nova:
-
-1. Atualize a mesma versão em `pyproject.toml` e em `installer/VoiceNotes.iss`.
-2. Execute `pytest -q` na `.venv`.
-3. Gere o instalador e instale-o em uma conta Windows de teste, confirmando: inicialização pela bandeja, gravação, transcrição, resumo e abertura da Biblioteca.
-4. Antes do merge, aumente a versão em `pyproject.toml` e `installer/VoiceNotes.iss`. Após o merge na `main`, o GitHub Actions testa, gera e publica automaticamente `VoiceNotes-Setup-x.y.z.exe` no repositório público `VictorJurado18/voice-notes-releases`.
-5. Quando houver distribuição pública, publique também um checksum SHA-256 e considere assinar o instalador. Isso reduz alertas do Microsoft Defender SmartScreen e permite ao usuário verificar a origem do arquivo.
-6. Atualize `CURRENT_HIGHLIGHTS` em `src/record_transcript_resume/release_notes.py` com as novidades efetivamente incluídas nessa versão. O popup usa a versão do pacote, sem consultar a internet. Verifique uma atualização real e um segundo início: o aviso deve aparecer só no primeiro; confira também a reabertura pelo botão, a instalação nova e o início oculto.
-
-### Estrutura do projeto
+Por padrão, cada gravação ganha uma pasta dentro de `Música\record-transcript-resume`:
 
 ```text
-src/record_transcript_resume/
-    gui.py                    # Widget, navegação e fluxos de interface
-    recording.py              # Coordenação de gravação
-    windows_audio_backend.py  # Microfone e loopback do Windows
-    transcription.py          # Whisper local
-    diarization.py            # Separação opcional de falantes
-    synthesis.py              # Codex, Claude Code e formatos de resumo
-    api_provider.py           # Provider REST JSON configurável por token
-    pipeline.py               # Orquestração de transcrição e resumo
-    library.py                # Descoberta de resultados salvos
-    exports.py                # DOCX e PDF
-    jobs.py                   # Fila e retomada de tarefas
-    resources/install_providers.ps1 # Node local, Codex CLI e Claude Code
-installer/
-    VoiceNotes.iss            # Configuração do Inno Setup
-tests/                        # Testes automatizados
+recording-AAAAMMDD-HHMMSS/
+├── recording-AAAAMMDD-HHMMSS.mp3
+├── transcription.md  (se você transcrever)
+└── summary.md        (se você resumir)
 ```
+
+### Para criar resumos
+
+Abra **Ajustes → Resumos e IA** e escolha como gerar o resumo:
+
+- **Codex ou Claude Code:** use **Conectar conta no navegador** e siga o login do serviço escolhido.
+- **API por token:** use **+ Novo Provider** e informe a URL, o modelo e a chave. A chave fica no Cofre de Credenciais do Windows.
+
+A transcrição funciona sem configurar nenhum desses serviços. Ao pedir um resumo, o texto transcrito é enviado ao provider que você escolheu. Você pode testar Codex ou Claude Code em **Ajustes → Diagnóstico**; o teste pode consumir uso da sua conta.
+
+### Para ajustar a transcrição
+
+Em **Ajustes → Transcrição**, escolha o idioma e o modelo Whisper. `small` é uma escolha inicial equilibrada; `tiny` e `base` são mais leves, enquanto `medium` e `large-v3` exigem mais recursos. O modelo é baixado na primeira utilização. **Testar modelo** permite verificar se ele carrega e informa qual dispositivo foi usado.
+
+Em uma GPU NVIDIA compatível, o app tenta acelerar a transcrição. Se a GPU não estiver disponível ou falhar, ele tenta novamente pela CPU. GPUs AMD e Intel usam a CPU nesta versão.
+
+Para identificar **Pessoa 1**, **Pessoa 2** etc., aceite as condições do modelo [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1), crie um token de leitura no Hugging Face e salve-o em **Ajustes → Transcrição**. Depois, ative **Separar falantes** na gravação ou importação desejada. A opção permanece desligada por padrão, mesmo com o token salvo. A identificação não descobre automaticamente os nomes das pessoas; na Biblioteca, você pode revisar sugestões e aplicar nomes manualmente.
+
+## Outros caminhos
+
+| Se você já tem… | Abra | Faça isto |
+|---|---|---|
+| Um áudio | **Arquivo** | Importe e escolha transcrição, resumo ou ambos. |
+| Um texto transcrito | **Arquivo** | Cole o texto ou abra um `.txt`/`.md` para gerar um resumo. |
+| Um vídeo autorizado | **YouTube** | Cole o link e escolha o resultado desejado. |
+| Uma gravação salva | **Biblioteca** | Abra o áudio, edite a transcrição ou o resumo, exporte ou processe depois. |
+
+Na **Biblioteca**, você pode buscar, filtrar, favoritar e editar títulos e etiquetas. **Escolher pasta** mostra resultados de outro local sem mudar a pasta das próximas gravações. A importação preserva o arquivo original e cria uma cópia na pasta de resultados.
+
+O botão **Minimizar** reduz o app a uma etiqueta na tela. **Ocultar** o deixa acessível pelo ícone perto do relógio do Windows, que também permite mostrar e encerrar o programa. Em **Ajustes → Atualizações**, você pode verificar e instalar novas versões quando forem publicadas.
+
+## Se algo não funcionar
+
+| Situação | O que conferir |
+|---|---|
+| **A janela sumiu** | Procure o ícone do Voice Notes perto do relógio, inclusive na seta `^` de itens ocultos, e dê dois cliques. |
+| **Não houve resumo** | Confira o provider em **Ajustes → Resumos e IA** e a conexão em **Diagnóstico**. A transcrição continua salva se o resumo falhar. |
+| **A transcrição falhou** | Abra **Processos → Ver erro**. Em **Ajustes → Transcrição**, use **Testar modelo**; o primeiro teste pode baixar arquivos. |
+| **Falhou a separação de falantes (403)** | Confirme que aceitou as condições do modelo no Hugging Face e que o token tem permissão de leitura. |
+| **O som do computador não apareceu** | Selecione **Sistema** ou **Microfone + sistema** e confira o dispositivo de saída padrão do Windows. |
+
+Em **Ajustes → Diagnóstico**, você também pode verificar a pasta de saída, o microfone, o áudio do sistema e os serviços de IA. O log técnico fica em `%LOCALAPPDATA%\Voice Notes\recorder.log`; inclua-o ao [relatar um problema](https://github.com/VictorJurado18/gavador_audio/issues), sem anexar conteúdo confidencial desnecessário.
+
+## Privacidade
+
+O áudio é gravado e transcrito no seu computador. A separação opcional de falantes também é feita localmente após baixar o modelo. Para gerar resumos, o app envia o **texto** ao serviço de IA selecionado; confira as regras desse serviço antes de processar material sensível. Ao usar a página YouTube, o app acessa o link informado para baixar o áudio. Os arquivos produzidos ficam na pasta que você escolheu.
+
+## Para quem desenvolve
+
+O código-fonte, a configuração local, a CLI, os testes e o processo de build estão em [DEVELOPMENT.md](DEVELOPMENT.md). O [histórico de versões](https://github.com/VictorJurado18/voice-notes-releases/releases) contém os instaladores publicados.
