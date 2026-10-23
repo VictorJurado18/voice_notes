@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from record_transcript_resume.updates import APP_VERSION, ApplicationUpdate, check_for_updates, start_downloaded_update
+from record_transcript_resume.updates import (
+    APP_VERSION,
+    ApplicationUpdate,
+    _latest_release_payload,
+    check_for_updates,
+    start_downloaded_update,
+)
 
 
 def test_temporary_network_error_is_not_reported_as_no_available_update() -> None:
@@ -27,6 +34,16 @@ def test_installed_version_matches_project_metadata() -> None:
     expected = re.search(r'^version\s*=\s*"([^"]+)"', contents, re.MULTILINE)
     assert expected is not None
     assert APP_VERSION == expected.group(1)
+
+
+def test_updater_reads_releases_from_the_source_repository() -> None:
+    with patch("record_transcript_resume.updates.request.urlopen") as urlopen:
+        urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(_release(APP_VERSION)).encode()
+        payload = _latest_release_payload()
+
+    request = urlopen.call_args.args[0]
+    assert request.full_url == "https://api.github.com/repos/VictorJurado18/voice_notes/releases/latest"
+    assert payload["tag_name"] == f"v{APP_VERSION}"
 
 
 def test_silent_installer_leaves_restart_to_the_update_launcher() -> None:

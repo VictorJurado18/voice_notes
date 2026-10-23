@@ -6,13 +6,13 @@
 
 **Grave, transcreva e resuma reuniões, aulas e chamadas — direto no seu Windows.**
 
-[![Release](https://img.shields.io/github/v/release/VictorJurado18/voice-notes-releases?label=vers%C3%A3o)](https://github.com/VictorJurado18/voice-notes-releases/releases/latest)
+[![Release](https://img.shields.io/github/v/release/VictorJurado18/voice_notes?label=vers%C3%A3o)](https://github.com/VictorJurado18/voice_notes/releases/latest)
 ![Plataforma](https://img.shields.io/badge/Windows-10%20%7C%2011%20(64--bit)-0078D6?logo=windows&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![Whisper](https://img.shields.io/badge/transcri%C3%A7%C3%A3o-Whisper%20local-6E56CF)
 [![Licença: MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-green)](LICENSE)
 
-[**Baixar o instalador**](https://github.com/VictorJurado18/voice-notes-releases/releases/latest) ·
+[**Baixar o instalador**](https://github.com/VictorJurado18/voice_notes/releases/latest) ·
 [Primeiros passos](#primeiros-passos) ·
 [Solução de problemas](#solução-de-problemas) ·
 [Desenvolvimento](DEVELOPMENT.md)
@@ -21,7 +21,7 @@
 
 ---
 
-O **Voice Notes** captura o microfone, o áudio do sistema ou ambos, transcreve localmente com [Whisper](https://github.com/SYSTRAN/faster-whisper) e, se você quiser, gera resumos estruturados com Codex, Claude Code ou qualquer API de IA compatível. O áudio nunca sai do seu computador.
+O **Voice Notes** captura o microfone, o áudio do sistema ou ambos e, por padrão, transcreve localmente com [Whisper](https://github.com/SYSTRAN/faster-whisper). Se você quiser, também pode usar um provider de transcrição por API ou gerar resumos com Codex, Claude Code ou uma API de IA compatível.
 
 ## Índice
 
@@ -59,7 +59,7 @@ O instalador já inclui tudo o que o app precisa — não é necessário instala
 
 ## Primeiros passos
 
-1. **Instale.** Baixe `VoiceNotes-Setup-x.y.z.exe` na [página de versões](https://github.com/VictorJurado18/voice-notes-releases/releases/latest) e execute. Se quiser resumos via Codex CLI ou Claude Code, marque a instalação opcional deles.
+1. **Instale.** Baixe `VoiceNotes-Setup-x.y.z.exe` na [página de versões](https://github.com/VictorJurado18/voice_notes/releases/latest) e execute. Se quiser resumos via Codex CLI ou Claude Code, marque a instalação opcional deles.
 2. **Configure a gravação.** Abra **Voice Notes** pelo menu Iniciar. Na página **Gravar**, escolha a **Fonte de áudio** e confira a pasta em **Salvar em**.
 3. **Escolha o resultado.** Em **Depois de parar**, selecione **Salvar só o áudio**, **Áudio + transcrição** ou **Áudio + transcrição + resumo**.
 4. **Grave.** Clique em **Iniciar gravação** e, ao terminar, em **Parar**. Acompanhe o processamento em **Processos** — você pode ocultar a janela enquanto ele roda.
@@ -98,6 +98,8 @@ Em **Ajustes → Transcrição**, escolha idioma e modelo:
 
 **Testar modelo** confirma que o modelo carrega e mostra se está usando GPU ou CPU. GPUs AMD e Intel usam a CPU nesta versão.
 
+Se você escolher **transcrição por API**, o app enviará o arquivo de áudio ao provider configurado. Confira os termos e a privacidade desse serviço antes de processar material sensível.
+
 ### Separação de falantes
 
 1. Aceite as condições do modelo [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) no Hugging Face.
@@ -133,7 +135,8 @@ A importação preserva o arquivo original e cria uma cópia na pasta de resulta
 
 ## Privacidade
 
-- **Gravação, transcrição e separação de falantes** acontecem inteiramente no seu computador.
+- **Gravação e transcrição com Whisper** acontecem no seu computador; a separação opcional de falantes também é local.
+- **Transcrição por API**, quando escolhida, envia o arquivo de áudio ao provider configurado.
 - **Resumos** enviam apenas o *texto* transcrito ao provider escolhido. Verifique os termos desse serviço antes de processar material sensível.
 - **YouTube** acessa somente o link informado para baixar o áudio.
 - Todos os arquivos ficam na pasta que você definiu.
@@ -154,7 +157,7 @@ A importação preserva o arquivo original e cria uma cópia na pasta de resulta
 
 Configuração do ambiente, CLI, testes, build do instalador e processo de release estão em [DEVELOPMENT.md](DEVELOPMENT.md). Bugs e sugestões são bem-vindos nas [issues](https://github.com/VictorJurado18/voice_notes/issues).
 
-Os instaladores publicados e o histórico de versões ficam em [voice-notes-releases](https://github.com/VictorJurado18/voice-notes-releases/releases).
+Os instaladores a partir da versão 0.10.30 ficam nas [releases deste repositório](https://github.com/VictorJurado18/voice_notes/releases). As [versões anteriores](https://github.com/VictorJurado18/voice-notes-releases/releases) continuam disponíveis no repositório antigo.
 
 ## Licença
 

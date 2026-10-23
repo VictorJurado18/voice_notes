@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   test-build-publish:
@@ -46,38 +46,86 @@ jobs:
           $version = (Select-String -Path pyproject.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
           "value=$version" >> $env:GITHUB_OUTPUT
 
-      - name: Check whether this version was already published
-        id: existing_release
+      - name: Check release in this repository
+        id: current_release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ steps.version.outputs.value }}"
+          $tag = "v$version"
+          $installerName = "VoiceNotes-Setup-$version.exe"
+          $ErrorActionPreference = "Continue"
+          $assetNames = gh release view $tag --repo $env:GITHUB_REPOSITORY --json assets --jq '.assets[].name' 2>$null
+          $releaseExists = $LASTEXITCODE -eq 0
+          $ErrorActionPreference = "Stop"
+          "release_exists=$($releaseExists.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "asset_exists=$((($releaseExists -and $assetNames -contains $installerName)).ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          exit 0
+
+      # 0.10.30 is published in both places so every older installation,
+      # whose updater still reads the legacy repository, can cross over.
+      - name: Check legacy bridge release
+        id: bridge_release
+        if: steps.version.outputs.value == '0.10.30'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.VOICE_NOTES_RELEASES_TOKEN }}
         run: |
+          if (-not $env:GH_TOKEN) { throw "VOICE_NOTES_RELEASES_TOKEN is required for the 0.10.30 bridge release." }
+          $version = "${{ steps.version.outputs.value }}"
+          $tag = "v$version"
+          $installerName = "VoiceNotes-Setup-$version.exe"
           $ErrorActionPreference = "Continue"
-          gh release view "v${{ steps.version.outputs.value }}" --repo VictorJurado18/voice-notes-releases 2>$null
+          $assetNames = gh release view $tag --repo VictorJurado18/voice-notes-releases --json assets --jq '.assets[].name' 2>$null
           $releaseExists = $LASTEXITCODE -eq 0
           $ErrorActionPreference = "Stop"
-          if ($releaseExists) {
-            "exists=true" >> $env:GITHUB_OUTPUT
-          } else {
-            "exists=false" >> $env:GITHUB_OUTPUT
-          }
+          "release_exists=$($releaseExists.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "asset_exists=$((($releaseExists -and $assetNames -contains $installerName)).ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           exit 0
 
       - name: Build installer
-        if: steps.existing_release.outputs.exists == 'false'
+        if: steps.current_release.outputs.asset_exists == 'false' || (steps.version.outputs.value == '0.10.30' && steps.bridge_release.outputs.asset_exists == 'false')
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_installer.ps1
 
-      - name: Publish public installer release
-        if: steps.existing_release.outputs.exists == 'false'
+      - name: Publish release in this repository
+        if: steps.current_release.outputs.asset_exists == 'false'
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.VOICE_NOTES_RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           $version = "${{ steps.version.outputs.value }}"
+          $tag = "v$version"
           $installer = "dist\VoiceNotes-Setup-$version.exe"
           if (-not (Test-Path $installer)) { throw "Installer was not generated: $installer" }
           $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           $commit = (git rev-parse HEAD).Trim()
           $notes = "Instalador Windows gerado automaticamente a partir do commit $commit.`n`nSHA-256: $hash"
-          gh release create "v$version" $installer --repo VictorJurado18/voice-notes-releases --title "Voice Notes v$version" --notes $notes
+          if ("${{ steps.current_release.outputs.release_exists }}" -eq "true") {
+            gh release upload $tag $installer --repo $env:GITHUB_REPOSITORY
+          } else {
+            gh release create $tag $installer --repo $env:GITHUB_REPOSITORY --target $commit --latest --title "Voice Notes v$version" --notes $notes
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Failed to publish $tag in $env:GITHUB_REPOSITORY." }
+
+      - name: Publish 0.10.30 bridge in legacy repository
+        if: steps.version.outputs.value == '0.10.30' && steps.bridge_release.outputs.asset_exists == 'false'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.VOICE_NOTES_RELEASES_TOKEN }}
+        run: |
+          if (-not $env:GH_TOKEN) { throw "VOICE_NOTES_RELEASES_TOKEN is required for the 0.10.30 bridge release." }
+          $version = "${{ steps.version.outputs.value }}"
+          $tag = "v$version"
+          $installer = "dist\VoiceNotes-Setup-$version.exe"
+          if (-not (Test-Path $installer)) { throw "Installer was not generated: $installer" }
+          $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          $commit = (git rev-parse HEAD).Trim()
+          $notes = "Versão de transição para atualizações pelo repositório Voice Notes.`n`nInstalador gerado a partir do commit $commit.`n`nSHA-256: $hash"
+          if ("${{ steps.bridge_release.outputs.release_exists }}" -eq "true") {
+            gh release upload $tag $installer --repo VictorJurado18/voice-notes-releases
+          } else {
+            gh release create $tag $installer --repo VictorJurado18/voice-notes-releases --latest --title "Voice Notes v$version" --notes $notes
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Failed to publish the $tag legacy bridge release." }

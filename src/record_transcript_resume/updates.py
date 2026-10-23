@@ -14,7 +14,7 @@ from urllib import error, request
 from record_transcript_resume.paths import app_data_dir
 from record_transcript_resume.windows_process import hidden_process_kwargs
 
-RELEASES_API_URL = "https://api.github.com/repos/VictorJurado18/voice-notes-releases/releases/latest"
+RELEASES_API_URL = "https://api.github.com/repos/VictorJurado18/voice_notes/releases/latest"
 _SETUP_NAME = re.compile(r"^VoiceNotes-Setup-(?P<version>.+)\.exe$", re.IGNORECASE)
 _UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{B6E79191-B14A-49FD-B2D8-5A4642EC418C}_is1"
 

@@ -81,7 +81,9 @@ Para uma alteração funcional que será publicada:
 1. Atualize a **mesma versão** em `pyproject.toml` e `installer/VoiceNotes.iss`.
 2. Atualize os destaques em `src/record_transcript_resume/release_notes.py` com o que realmente entrou na versão.
 3. Execute os testes e confira a gravação, transcrição, resumo, Biblioteca e inicialização pela bandeja em uma instalação de teste.
-4. Faça a PR. O merge na `main` aciona o GitHub Actions, que testa e tenta gerar e publicar `VoiceNotes-Setup-x.y.z.exe` em [voice-notes-releases](https://github.com/VictorJurado18/voice-notes-releases/releases).
+4. Faça a PR. O merge na `main` aciona o GitHub Actions, que testa e tenta gerar e publicar `VoiceNotes-Setup-x.y.z.exe` nas [releases deste repositório](https://github.com/VictorJurado18/voice_notes/releases).
+
+A versão 0.10.30 também será publicada no [repositório antigo](https://github.com/VictorJurado18/voice-notes-releases/releases) para atualizar instalações que ainda consultam aquele endereço. A partir dela, o app consulta as releases deste repositório.
 
 Confira o workflow e o resultado da publicação antes de anunciar um instalador como disponível. Alterações só de documentação não mudam a versão.
 
