@@ -16,6 +16,10 @@ from record_transcript_resume.paths import app_data_dir
 CURRENT_HIGHLIGHTS = (
     ("Transcrição acelerada automaticamente",
      "Você não precisa configurar nada. Se houver uma GPU NVIDIA compatível, o Whisper a usa automaticamente. Se a GPU não estiver disponível ou falhar, o app usa a CPU. Para conferir, vá em Ajustes → Diagnóstico → Teste do Whisper local e clique em Testar modelo. O resultado mostra se o teste usou GPU ou CPU."),
+    ("Ajustes mais fáceis de navegar",
+     "As seções de Ajustes agora ficam em uma barra lateral, com a seção atual destacada. Em janelas estreitas, a navegação se adapta ao espaço disponível."),
+    ("Ocultar sem deixar a dica na tela",
+     "Ao ocultar o app, a dica do botão também desaparece e não fica solta na área de trabalho."),
 )
 
 

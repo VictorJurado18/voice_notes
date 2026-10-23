@@ -237,6 +237,7 @@ def test_text_import_uses_visible_focus_editor() -> None:
 def test_hide_without_tray_temporarily_restores_native_window_management() -> None:
     app = SimpleNamespace(
         _tray_available=False,
+        _hide_button_tooltip=Mock(),
         _close_browser_audio=Mock(),
         overrideredirect=Mock(return_value=True),
         iconify=Mock(),
@@ -245,9 +246,32 @@ def test_hide_without_tray_temporarily_restores_native_window_management() -> No
 
     RecorderApp._hide_to_tray(app)
 
+    app._hide_button_tooltip.assert_called_once()
     app.overrideredirect.assert_any_call(False)
     app.iconify.assert_called_once()
     assert app._restore_borderless_on_map is True
+
+
+def test_hide_to_tray_closes_visible_tooltip_and_cancels_pending_hover() -> None:
+    popup = Mock()
+    app = SimpleNamespace(
+        _tray_available=True,
+        _button_tooltip_after="hover-timer",
+        _button_tooltip_target=object(),
+        _button_tooltip_popup=popup,
+        after_cancel=Mock(),
+        _close_browser_audio=Mock(),
+        withdraw=Mock(),
+    )
+    app._hide_button_tooltip = lambda: RecorderApp._hide_button_tooltip(app)
+
+    RecorderApp._hide_to_tray(app)
+
+    app.after_cancel.assert_called_once_with("hover-timer")
+    assert app._button_tooltip_after is None
+    assert app._button_tooltip_target is None
+    popup.withdraw.assert_called_once()
+    app.withdraw.assert_called_once()
 
 
 def test_update_workers_pass_results_without_calling_tk_from_threads(monkeypatch) -> None:

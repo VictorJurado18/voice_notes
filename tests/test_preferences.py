@@ -54,6 +54,8 @@ def test_color_theme_is_persisted_and_invalid_values_fall_back(tmp_path: Path) -
     }
     path.write_text('{"color_theme":"not-a-theme"}', encoding="utf-8")
     assert load_color_theme(path) == "violeta"
+    path.write_text('{"color_theme":"ameixa"}', encoding="utf-8")
+    assert load_color_theme(path) == "violeta"
 
 
 @pytest.mark.parametrize("name", THEMES)
