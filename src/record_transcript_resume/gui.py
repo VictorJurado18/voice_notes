@@ -2760,20 +2760,29 @@ class RecorderApp(ctk.CTk):
         )
         self._browser_count_label.pack(side=tk.BOTTOM, fill=tk.X, pady=(7, 3), before=table_heading)
         self._browser_full_path = tk.StringVar(value="")
-        preview = ctk.CTkFrame(browser_area, fg_color=_theme_color("#17213A"), corner_radius=9, height=108)
+        preview = ctk.CTkFrame(browser_area, fg_color=_theme_color("#17213A"), corner_radius=9)
         self._browser_preview = preview
         preview.pack(fill=tk.X, pady=(0, 12))
-        preview.pack_propagate(False)
         self._browser_preview_title = tk.StringVar(value="Selecione um arquivo ou pasta")
         self._browser_preview_body = tk.StringVar(value="Abra uma pasta com dois cliques para ver seu conteúdo.")
-        ctk.CTkLabel(preview, textvariable=self._browser_preview_title, font=("Segoe UI", 13, "bold"),
-                     text_color=_COLORS["text"], anchor="w").pack(fill=tk.X, padx=14, pady=(10, 2))
+        preview_heading = ctk.CTkFrame(preview, fg_color="transparent")
+        preview_heading.pack(fill=tk.X, padx=14, pady=(8, 1))
+        ctk.CTkLabel(preview_heading, textvariable=self._browser_preview_title, font=("Segoe UI", 13, "bold"),
+                     text_color=_COLORS["text"], anchor="w", wraplength=500,
+                     justify=tk.LEFT).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._browser_details_expanded = False
+        self._browser_more_button = ctk.CTkButton(
+            preview_heading, text="Detalhes ▾", command=self._toggle_browser_details,
+            width=82, height=26, fg_color="transparent", hover_color=_theme_color("#263550"),
+            text_color=_COLORS["muted"], font=("Segoe UI", 10),
+        )
+        self._browser_more_button.pack(side=tk.RIGHT, padx=(8, 0))
         self._browser_preview_body_label = ctk.CTkLabel(
             preview, textvariable=self._browser_preview_body, font=("Segoe UI", 10),
             text_color=_COLORS["muted"], anchor="w", justify=tk.LEFT,
             wraplength=600,
         )
-        self._browser_preview_body_label.pack(fill=tk.X, padx=14)
+        self._browser_preview_body_label.pack(fill=tk.X, padx=14, pady=(0, 1))
         self._browser_topic_label = ctk.CTkLabel(
             preview, text="", font=("Segoe UI", 12), text_color=_COLORS["text"],
             anchor="w", justify=tk.LEFT, wraplength=390,
@@ -2784,11 +2793,13 @@ class RecorderApp(ctk.CTk):
         )
         self._browser_topic_button = ctk.CTkButton(
             preview, text="Gerar descrição curta", command=self._browser_generate_topic,
-            height=30, width=185, fg_color=_theme_color("#263550"),
+            height=30, width=160, fg_color=_theme_color("#263550"),
         )
+        self._browser_actions = ctk.CTkFrame(preview, fg_color="transparent")
+        self._browser_actions.pack(fill=tk.X, padx=14, pady=(5, 10))
         self._browser_name_button = ctk.CTkButton(
-            preview, text="Renomear com IA", command=self._browser_suggest_name,
-            height=30, width=185, fg_color=_theme_color("#263550"),
+            self._browser_actions, text="Renomear com IA", command=self._browser_suggest_name,
+            height=30, width=130, fg_color=_theme_color("#263550"),
         )
         self._browser_name_button._help_text = (
             "Sugere um nome para a pasta e o áudio usando o resumo ou a transcrição já salvos. "
@@ -2824,28 +2835,24 @@ class RecorderApp(ctk.CTk):
         self._browser_audio_tick: str | None = None
         self._browser_seek_after: str | None = None
         self._browser_slider_updating = False
-        self._browser_secondary_actions = ctk.CTkFrame(preview, fg_color="transparent")
-        preview_actions = ctk.CTkFrame(preview, fg_color="transparent")
-        preview_actions.pack(fill=tk.X, padx=14, pady=(2, 8))
         self._browser_open_button = ctk.CTkButton(
-            preview_actions, text="Abrir", command=self._browser_open, width=125, height=30,
+            self._browser_actions, text="Abrir", command=self._browser_open, width=120, height=30,
             text_color=_COLORS['accent_text'], fg_color=_COLORS["accent"])
-        self._browser_open_button.pack(side=tk.RIGHT)
         self._browser_process_button = ctk.CTkButton(
-            preview_actions, text="Processar áudio", command=self._browser_process_audio,
-            width=140, height=30, fg_color=_theme_color("#263550"))
+            self._browser_actions, text="Processar áudio", command=self._browser_process_audio,
+            width=125, height=30, fg_color=_theme_color("#263550"))
         self._browser_favorite_button = ctk.CTkButton(
-            self._browser_secondary_actions, text="☆ Favoritar", command=self._browser_toggle_favorite,
-            width=110, height=30, fg_color=_theme_color("#263550"))
+            self._browser_actions, text="☆ Favoritar", command=self._browser_toggle_favorite,
+            width=100, height=30, fg_color=_theme_color("#263550"))
         self._browser_metadata_button = ctk.CTkButton(
-            self._browser_secondary_actions, text="Título e etiquetas", command=self._browser_edit_metadata,
-            width=145, height=30, fg_color=_theme_color("#263550"))
+            self._browser_actions, text="Título e etiquetas", command=self._browser_edit_metadata,
+            width=135, height=30, fg_color=_theme_color("#263550"))
         self._browser_docx_button = ctk.CTkButton(
-            self._browser_secondary_actions, text="Exportar DOCX", command=lambda: self._browser_export_document("docx"),
+            self._browser_actions, text="Exportar DOCX", command=lambda: self._browser_export_document("docx"),
             width=110, height=30, fg_color=_theme_color("#263550"))
         self._browser_pdf_button = ctk.CTkButton(
-            preview_actions, text="Abrir PDF", command=self._browser_open_pdf,
-            width=92, height=30, fg_color=_theme_color("#263550"))
+            self._browser_actions, text="Abrir PDF", command=self._browser_open_pdf,
+            width=85, height=30, fg_color=_theme_color("#263550"))
         self._browser_full_path_label = ctk.CTkLabel(
             panel, textvariable=self._browser_full_path, font=("Segoe UI", 9),
             text_color=_COLORS["muted"], anchor="w",
@@ -2857,6 +2864,12 @@ class RecorderApp(ctk.CTk):
         self._browser_selected_paths: set[Path] = set()
         self._browser_multiselect = False
         self._browser_selection_anchor: Path | None = None
+        self._browser_action_buttons: tuple[ctk.CTkButton, ...] = (
+            self._browser_name_button, self._browser_favorite_button,
+            self._browser_metadata_button, self._browser_docx_button,
+            self._browser_pdf_button, self._browser_process_button,
+            self._browser_open_button,
+        )
         self._page_viewports["library"]._parent_canvas.bind(
             "<Configure>", lambda _event: self.after_idle(self._fit_browser_panel), add="+",
         )
@@ -5016,8 +5029,9 @@ class RecorderApp(ctk.CTk):
         if not hasattr(self, "_browser_area"):
             return
         short = not self._maximized and self.winfo_height() < 800
-        signature = (self._maximized, self._desktop_layout, short)
+        signature = (self._maximized, self._desktop_layout, short, self._browser_details_expanded)
         if getattr(self, "_browser_layout_signature", None) == signature:
+            self._layout_browser_actions()
             self.after_idle(self._fit_browser_panel)
             return
         self._browser_layout_signature = signature
@@ -5040,20 +5054,23 @@ class RecorderApp(ctk.CTk):
         preview.pack_forget()
         self._focus_library_panel.pack_propagate(False)
         if self._desktop_layout:
+            self._browser_more_button.pack_forget()
             preview.configure(width=430, height=150)
             preview.pack(side=tk.RIGHT, fill=tk.Y, padx=(14, 0), pady=(0, 12))
             preview.pack_propagate(False)
-            self._browser_open_button.master.pack_configure(pady=(12, 12))
+            self._browser_actions.pack_forget()
+            self._browser_actions.pack(side=tk.BOTTOM, fill=tk.X, padx=14, pady=(6, 12))
             table.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             self._browser_preview_body_label.configure(wraplength=390)
             self._browser_preview_details_label.pack(
                 fill=tk.X, padx=14, pady=(16, 0),
-                before=self._browser_open_button.master,
+                before=self._browser_actions,
             )
         else:
-            preview.configure(height=self._browser_preview_height())
-            preview.pack_propagate(False)
-            self._browser_open_button.master.pack_configure(pady=(2, 8))
+            self._browser_more_button.pack(side=tk.RIGHT, padx=(8, 0))
+            preview.pack_propagate(True)
+            self._browser_actions.pack_forget()
+            self._browser_actions.pack(fill=tk.X, padx=14, pady=(4, 9))
             preview.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 12))
             table.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
             self._browser_preview_body_label.configure(wraplength=600)
@@ -5062,7 +5079,35 @@ class RecorderApp(ctk.CTk):
         self._browser_preview_details_label.configure(wraplength=wrap)
         self._browser_topic_label.configure(wraplength=wrap)
         self._browser_estimate.configure(wraplength=390 if self._desktop_layout else 630)
+        self._sync_browser_preview_details()
+        self._layout_browser_actions()
         self.after_idle(self._fit_browser_panel)
+
+    def _toggle_browser_details(self) -> None:
+        self._browser_details_expanded = not self._browser_details_expanded
+        self._browser_more_button.configure(
+            text="Detalhes ▴" if self._browser_details_expanded else "Detalhes ▾",
+        )
+        self._layout_browser()
+
+    def _sync_browser_preview_details(self) -> None:
+        entry = self._browser_selected
+        show_details = self._desktop_layout or self._browser_details_expanded
+        if entry is not None:
+            self._browser_refresh_topic(entry)
+        if entry is not None and entry.kind == "audio" and show_details:
+            self._browser_estimate.pack(
+                fill=tk.X, padx=14, pady=(6, 4),
+                after=self._browser_preview_body_label,
+            )
+        else:
+            self._browser_estimate.pack_forget()
+        if not self._desktop_layout and self._browser_details_expanded:
+            self._browser_preview_details_label.pack(
+                fill=tk.X, padx=14, pady=(7, 0), before=self._browser_actions,
+            )
+        elif not self._desktop_layout:
+            self._browser_preview_details_label.pack_forget()
 
     def _fit_browser_panel(self) -> None:
         if self._compact_mode:
@@ -5074,25 +5119,70 @@ class RecorderApp(ctk.CTk):
         if int(self._focus_library_panel.cget("height")) != height:
             self._focus_library_panel.configure(height=height)
 
-    def _browser_preview_height(self) -> int:
+    def _layout_browser_actions(self) -> None:
+        """Keep selection actions aligned in one row when the preview has room."""
+        if not hasattr(self, "_browser_action_buttons"):
+            return
+        for button in self._browser_action_buttons:
+            button.grid_forget()
         entry = self._browser_selected
-        if hasattr(self, "_browser_selected_paths") and len(self._selected_browser_entries()) > 1:
-            return 88 if not self._maximized and self.winfo_height() < 800 else 120
-        if entry is None:
-            return 112
-        if entry.kind == "audio":
-            height = 218
-        elif entry.kind in {"recording", "text_record"}:
-            if summary_available(entry.path):
-                height = 200 if load_topic(entry.path) else 230
-            else:
-                height = 164
-        elif entry.kind == "document" and entry.path.suffix.casefold() == ".md":
-            height = 164
+        multiple = len(self._selected_browser_entries()) > 1 if hasattr(self, "_browser_visible_entries") else False
+        if multiple:
+            return
+
+        actions: list[ctk.CTkButton] = []
+        if entry is not None:
+            if entry.kind in {"folder", "recording", "audio", "document"} and (
+                entry.kind != "document" or entry.path.name in {"summary.md", "transcription.md"}
+            ):
+                audio = saved_meeting_audio(entry.path)
+                if audio is not None:
+                    busy = self._name_active_audio is not None
+                    self._browser_name_button.configure(
+                        text="Sugerindo nome…" if self._name_active_audio == audio else "Renomear com IA",
+                        state=tk.DISABLED if busy else tk.NORMAL,
+                    )
+                    actions.append(self._browser_name_button)
+            if entry.kind in {"recording", "text_record"}:
+                actions.extend((self._browser_favorite_button, self._browser_metadata_button))
+            if entry.kind == "document" and entry.path.suffix.casefold() == ".md":
+                actions.append(self._browser_docx_button)
+            if self._browser_pdf_source(entry) is not None:
+                actions.append(self._browser_pdf_button)
+            if (
+                (entry.kind == "audio" and not (entry.path.parent / "transcription.md").is_file())
+                or (entry.kind == "recording" and not any(
+                    (entry.path / name).is_file() for name in ("transcription.md", "summary.md")
+                ))
+                or (entry.kind == "document" and entry.path.name.casefold() == "transcription.md")
+            ):
+                self._browser_process_button.configure(
+                    text="Gerar resumo" if entry.kind == "document" else "Processar áudio",
+                )
+                actions.append(self._browser_process_button)
+        actions.append(self._browser_open_button)
+
+        for column in range(len(self._browser_action_buttons) + 2):
+            self._browser_actions.grid_columnconfigure(column, weight=0)
+        usable_width = max(self._browser_preview.winfo_width(), self.winfo_width() - 74) - 28
+        needed_width = sum(int(button.cget("width")) for button in actions) + 7 * (len(actions) - 1)
+        one_row = not self._desktop_layout and usable_width >= needed_width
+        if one_row:
+            for column, button in enumerate(actions[:-1]):
+                button.grid(row=0, column=column, sticky="w", padx=(0, 7))
+            spacer = len(actions) - 1
+            self._browser_actions.grid_columnconfigure(spacer, weight=1)
+            actions[-1].grid(row=0, column=spacer + 1, sticky="e")
         else:
-            height = 120
-        button = getattr(self, "_browser_name_button", None)
-        return height + (36 if button is not None and button.winfo_manager() else 0)
+            self._browser_actions.grid_columnconfigure(0, weight=1)
+            self._browser_actions.grid_columnconfigure(1, weight=1)
+            for index, button in enumerate(actions):
+                row, column = divmod(index, 2)
+                if button is self._browser_open_button and index % 2 == 0:
+                    column = 1
+                button.grid(row=row, column=column, sticky="ew",
+                            padx=(0, 4) if column == 0 else (4, 0),
+                            pady=(0, 5) if index < len(actions) - 2 else (0, 0))
 
     def _layout_processing_panel(self) -> None:
         if hasattr(self, "_process_table"):
@@ -6716,19 +6806,13 @@ class RecorderApp(ctk.CTk):
                 "Navegue pelas pastas e gravações desta pasta. Selecione um item para ver seus arquivos e as ações disponíveis."
             )
             self._browser_open_button.configure(text="Abrir", state=tk.DISABLED)
-            self._browser_process_button.pack_forget()
-            self._browser_secondary_actions.pack_forget()
             self._browser_topic_label.pack_forget()
             self._browser_topic_button.pack_forget()
-            self._browser_name_button.pack_forget()
             self._browser_estimate.pack_forget()
             self._estimate_request += 1
             self._browser_audio_player.pack_forget()
             self._close_browser_audio()
-            self._browser_audio_player.master.configure(height=108)
-            for button in (self._browser_favorite_button, self._browser_metadata_button,
-                           self._browser_docx_button, self._browser_pdf_button):
-                button.pack_forget()
+            self._layout_browser_actions()
         self._draw_browser_rows()
         if query:
             self._browser_count.set(
@@ -6806,13 +6890,10 @@ class RecorderApp(ctk.CTk):
         self._browser_preview_details.set("Pastas selecionadas incluem os áudios diretamente dentro delas. A fila processa um áudio por vez.")
         self._estimate_request += 1
         self._close_browser_audio()
-        for widget in (self._browser_open_button, self._browser_process_button, self._browser_secondary_actions,
-                       self._browser_topic_label, self._browser_topic_button, self._browser_name_button,
-                       self._browser_estimate, self._browser_audio_player, self._browser_docx_button,
-                       self._browser_pdf_button):
+        for widget in (self._browser_topic_label, self._browser_topic_button,
+                       self._browser_estimate, self._browser_audio_player):
             widget.pack_forget()
-        if not self._desktop_layout:
-            self._browser_preview.configure(height=self._browser_preview_height())
+        self._layout_browser_actions()
 
     @staticmethod
     def _browser_column_positions(width: int) -> tuple[int, int, int, int]:
@@ -7009,74 +7090,42 @@ class RecorderApp(ctk.CTk):
             return
         if not self._browser_multiselect:
             self._browser_selected_paths = {entry.path}
-        if not self._browser_open_button.winfo_manager():
-            self._browser_open_button.pack(side=tk.RIGHT)
         self._browser_open_button.configure(state=tk.NORMAL)
         self._browser_preview_title.set(entry.title)
         self._browser_preview_body.set(
             f"{entry.detail or entry.kind.title()}  ·  {entry.path.name}"
         )
         self._browser_preview_details.set(self._browser_entry_details(entry))
-        self._browser_estimate.pack_forget()
         self._estimate_request += 1
         if entry.kind == "audio":
             self._browser_estimate.configure(text="Calculando duração e estimativa…")
-            self._browser_estimate.pack(fill=tk.X, padx=14, pady=(6, 4), after=self._browser_preview_body_label)
             self._request_processing_estimate(entry.path)
-        self._browser_refresh_topic(entry)
+        self._sync_browser_preview_details()
         self._browser_open_button.configure(
             text="Abrir pasta" if entry.kind in {"folder", "recording", "text_record"} else
                  "Abrir no player" if entry.kind == "audio" else "Abrir documento" if entry.kind == "document" else "Abrir arquivo"
         )
-        self._browser_process_button.pack_forget()
         self._browser_audio_player.pack_forget()
         if entry.kind == "audio":
             if self._browser_audio_path != entry.path:
                 self._close_browser_audio()
-            self._browser_audio_player.pack(fill=tk.X, pady=(7, 0), before=self._browser_open_button.master)
-            self._browser_audio_player.master.configure(height=self._browser_preview_height())
+            self._browser_audio_player.pack(fill=tk.X, pady=(7, 0), before=self._browser_actions)
         else:
             self._close_browser_audio()
-            self._browser_audio_player.master.configure(height=self._browser_preview_height())
-        for button in (self._browser_favorite_button, self._browser_metadata_button,
-                       self._browser_docx_button, self._browser_pdf_button):
-            button.pack_forget()
-        self._browser_secondary_actions.pack_forget()
         if entry.kind in {"recording", "text_record"}:
             key = self._browser_metadata_key(entry)
             data = self._library_metadata.load().get(str(key.resolve()).casefold(), {})
             favorite = bool(data.get("favorite", False)) if isinstance(data, dict) else False
             self._browser_favorite_button.configure(text="★ Favorito" if favorite else "☆ Favoritar")
-            self._browser_favorite_button.pack(side=tk.LEFT, padx=(0, 7))
-            self._browser_metadata_button.pack(side=tk.LEFT)
-            self._browser_secondary_actions.pack(
-                fill=tk.X, padx=14, pady=(7, 4), before=self._browser_open_button.master,
-            )
-        if entry.kind == "document" and entry.path.suffix.casefold() == ".md":
-            self._browser_docx_button.pack(side=tk.LEFT, padx=(0, 7))
-            self._browser_secondary_actions.pack(
-                fill=tk.X, padx=14, pady=(7, 4), before=self._browser_open_button.master,
-            )
-        if self._browser_pdf_source(entry) is not None:
-            self._browser_pdf_button.pack(side=tk.LEFT)
-        if entry.kind == "audio" and not (entry.path.parent / "transcription.md").is_file():
-            self._browser_process_button.configure(text="Processar áudio")
-            self._browser_process_button.pack(side=tk.RIGHT, padx=(0, 7))
-        elif entry.kind == "recording" and not any((entry.path / name).is_file() for name in ("transcription.md", "summary.md")):
-            self._browser_process_button.configure(text="Processar áudio")
-            self._browser_process_button.pack(side=tk.RIGHT, padx=(0, 7))
-        elif entry.kind == "document" and entry.path.name.casefold() == "transcription.md":
-            self._browser_process_button.configure(text="Gerar resumo")
-            self._browser_process_button.pack(side=tk.RIGHT, padx=(0, 7))
         self._browser_update_folder_actions()
-
         self._browser_refresh_name(entry)
-        if not self._desktop_layout:
-            self._browser_preview.configure(height=self._browser_preview_height())
+        self.after_idle(self._fit_browser_panel)
 
     def _browser_refresh_topic(self, entry: BrowserEntry) -> None:
         self._browser_topic_label.pack_forget()
         self._browser_topic_button.pack_forget()
+        if not (self._desktop_layout or self._browser_details_expanded):
+            return
         if entry.kind not in {"folder", "recording", "text_record"} or not summary_available(entry.path):
             return
         topic = load_topic(entry.path)
@@ -7095,23 +7144,8 @@ class RecorderApp(ctk.CTk):
             self._browser_topic_button.pack(anchor="w", padx=14, pady=(2, 4), after=self._browser_topic_label)
 
     def _browser_refresh_name(self, entry: BrowserEntry) -> None:
-        button = self._browser_name_button
-        button.pack_forget()
-        if entry.kind not in {"folder", "recording", "audio", "document"}:
-            return
-        if entry.kind == "document" and entry.path.name not in {"summary.md", "transcription.md"}:
-            return
-        audio = saved_meeting_audio(entry.path)
-        if audio is None:
-            return
-        busy = self._name_active_audio is not None
-        button.configure(
-            text="Sugerindo nome…" if self._name_active_audio == audio else "Renomear com IA",
-            state=tk.DISABLED if busy else tk.NORMAL,
-        )
-        anchor = (self._browser_topic_button if self._browser_topic_button.winfo_manager() else
-                  self._browser_topic_label if self._browser_topic_label.winfo_manager() else self._browser_preview_body_label)
-        button.pack(anchor="w", padx=14, pady=(2, 4), after=anchor)
+        if self._browser_selected is not None and self._browser_selected.path == entry.path:
+            self._layout_browser_actions()
 
     def _browser_suggest_name(self) -> None:
         entry = self._browser_selected
@@ -7152,8 +7186,7 @@ class RecorderApp(ctk.CTk):
             self._name_dialog = None
         if self._browser_selected is not None:
             self._browser_refresh_name(self._browser_selected)
-            if not self._desktop_layout:
-                self._browser_preview.configure(height=self._browser_preview_height())
+            self.after_idle(self._fit_browser_panel)
         if getattr(self, "_processing_status_text", "").startswith("Sugerindo nome"):
             self._name_status("Revisão de nome encerrada. Arquivos preservados.")
 
@@ -7350,8 +7383,7 @@ class RecorderApp(ctk.CTk):
         entry = self._browser_selected
         if entry is not None:
             self._browser_refresh_topic(entry)
-            if not self._desktop_layout:
-                self._browser_preview.configure(height=self._browser_preview_height())
+            self.after_idle(self._fit_browser_panel)
         if error:
             self.status.set("Não foi possível gerar a descrição curta")
             messagebox.showerror("Descrição não gerada", error, parent=self)

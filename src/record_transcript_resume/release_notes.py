@@ -16,6 +16,8 @@ from record_transcript_resume.paths import app_data_dir
 CURRENT_HIGHLIGHTS = (
     ("Atualizações pelo repositório Voice Notes",
      "As próximas versões serão publicadas junto com o código do app. Esta versão faz a transição automaticamente, inclusive para instalações que ainda consultam o repositório antigo."),
+    ("Biblioteca com mais espaço para os arquivos",
+     "A seleção agora mostra as ações alinhadas em uma faixa compacta. Informações adicionais ficam em Detalhes, deixando mais linhas da pasta visíveis."),
 )
 
 
