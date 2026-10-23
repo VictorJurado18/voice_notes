@@ -3,6 +3,8 @@ name = "record-transcript-resume"
 version = "0.10.29"
 description = "Windows app to record audio locally, transcribe with Whisper, and summarize via Codex or Claude Code CLI."
 requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Victor Nemeth Jurado" }]
 dependencies = [
     "customtkinter>=5.2.2",
     "lameenc>=1.8.2",

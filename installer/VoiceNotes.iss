@@ -22,6 +22,7 @@ WizardStyle=modern
 CloseApplications=yes
 UninstallDisplayName={#MyAppName}
 SetupIconFile=..\assets\voice-notes.ico
+LicenseFile=..\LICENSE
 
 [Tasks]
 Name: "desktopicon"; Description: "Criar atalho na área de trabalho"; GroupDescription: "Atalhos:"; Flags: unchecked
@@ -30,6 +31,8 @@ Name: "providers"; Description: "Instalar automaticamente Codex CLI e Claude Cod
 
 [Files]
 Source: "..\dist\VoiceNotes\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\src\record_transcript_resume\resources\install_providers.ps1"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Icons]
