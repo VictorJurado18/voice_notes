@@ -28,8 +28,8 @@ O aplicativo usa Python 3.12+, CustomTkinter/Tk para a interface, PyAudioWPatch 
 Requisitos: Windows 10 ou 11 de 64 bits, Python 3.12+ e internet para instalar dependências. Inno Setup 6 só é necessário para gerar o instalador.
 
 ```powershell
-git clone https://github.com/VictorJurado18/gavador_audio.git
-cd gavador_audio
+git clone https://github.com/VictorJurado18/voice_notes.git
+cd voice_notes
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_windows.ps1
 ```
 
