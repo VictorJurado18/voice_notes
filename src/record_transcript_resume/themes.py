@@ -12,7 +12,6 @@ THEME_LABELS: dict[str, str] = {
     "violeta": "Violeta atual",
     "oceano": "Oceano",
     "floresta": "Floresta",
-    "ameixa": "Ameixa",
     "ambar": "Âmbar",
     "vinho": "Vinho",
     "machine_red": "Machine Red",
@@ -132,11 +131,6 @@ THEMES: dict[str, dict[str, str]] = {
         bg="#0C1511", surface="#131F19", surface_alt="#1A2A21", border="#35513D",
         text="#F3FBF2", muted="#B0C8B1", soft="#D3E6D2", accent="#4DA76C",
         accent_hover="#64BC80", success="#83D9A0", warning="#EEC56C", danger="#ED8B83",
-    ),
-    "ameixa": _palette(
-        bg="#171017", surface="#211923", surface_alt="#302331", border="#59415D",
-        text="#FFF7FF", muted="#D0B9D2", soft="#EAD9EC", accent="#B85EBD",
-        accent_hover="#CC76D0", success="#79D6A3", warning="#F3C46C", danger="#FA8798",
     ),
     "ambar": _palette(
         bg="#17130D", surface="#211B12", surface_alt="#302719", border="#59462A",

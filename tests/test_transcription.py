@@ -27,7 +27,8 @@ class TranscriptionTests(unittest.TestCase):
         fake_faster_whisper.WhisperModel.return_value = fake_model
 
         with patch.object(Path, "is_file", return_value=True), \
-             patch.dict("sys.modules", {"faster_whisper": fake_faster_whisper}):
+             patch.dict("sys.modules", {"faster_whisper": fake_faster_whisper}), \
+             patch("record_transcript_resume.transcription._cuda_available", return_value=False):
             result = transcribe(Path("fake.mp3"), language="pt", model_size="small")
 
         self.assertEqual(len(result), 1)
@@ -43,7 +44,8 @@ class TranscriptionTests(unittest.TestCase):
         fake_faster_whisper.WhisperModel.return_value = fake_model
 
         with patch.object(Path, "is_file", return_value=True), \
-             patch.dict("sys.modules", {"faster_whisper": fake_faster_whisper}):
+             patch.dict("sys.modules", {"faster_whisper": fake_faster_whisper}), \
+             patch("record_transcript_resume.transcription._cuda_available", return_value=False):
             transcribe(Path("fake.mp3"), language="pt", model_size="large-v3")
 
         fake_faster_whisper.WhisperModel.assert_called_once_with(
@@ -57,6 +59,57 @@ class TranscriptionTests(unittest.TestCase):
              patch.dict("sys.modules", {"faster_whisper": None}):
             with self.assertRaises(TranscriptionError):
                 transcribe(Path("fake.mp3"))
+
+    def test_transcribe_uses_cuda_when_decoding_succeeds(self) -> None:
+        fake_model = MagicMock()
+        fake_model.transcribe.return_value = ([MagicMock(start=0.0, end=1.0, text="Olá")], None)
+        fake_faster_whisper = MagicMock(WhisperModel=MagicMock(return_value=fake_model))
+
+        with patch.object(Path, "is_file", return_value=True), \
+             patch.dict("sys.modules", {"faster_whisper": fake_faster_whisper}), \
+             patch("record_transcript_resume.transcription._cuda_available", return_value=True), \
+             patch("record_transcript_resume.transcription._prepare_cuda_runtime"):
+            result = transcribe(Path("fake.mp3"))
+
+        self.assertEqual(result[0].text, "Olá")
+        self.assertEqual(fake_faster_whisper.WhisperModel.call_args.kwargs["device"], "cuda")
+
+    def test_cuda_decode_failure_retries_entire_audio_on_cpu(self) -> None:
+        def failed_segments():
+            yield MagicMock(start=0.0, end=1.0, text="Incompleto")
+            raise RuntimeError("CUDA out of memory")
+
+        cuda_model = MagicMock()
+        cuda_model.transcribe.return_value = (failed_segments(), None)
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([MagicMock(start=0.0, end=2.0, text="Completo")], None)
+        fake_faster_whisper = MagicMock()
+        fake_faster_whisper.WhisperModel.side_effect = [cuda_model, cpu_model]
+
+        with patch.object(Path, "is_file", return_value=True), \
+             patch.dict("sys.modules", {"faster_whisper": fake_faster_whisper}), \
+             patch("record_transcript_resume.transcription._cuda_available", return_value=True), \
+             patch("record_transcript_resume.transcription._prepare_cuda_runtime"):
+            result = transcribe(Path("fake.mp3"))
+
+        self.assertEqual([segment.text for segment in result], ["Completo"])
+        self.assertEqual(
+            [call.kwargs["device"] for call in fake_faster_whisper.WhisperModel.call_args_list],
+            ["cuda", "cpu"],
+        )
+
+    def test_cuda_runtime_setup_failure_uses_cpu(self) -> None:
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([], None)
+        fake_faster_whisper = MagicMock(WhisperModel=MagicMock(return_value=cpu_model))
+
+        with patch.object(Path, "is_file", return_value=True), \
+             patch.dict("sys.modules", {"faster_whisper": fake_faster_whisper}), \
+             patch("record_transcript_resume.transcription._cuda_available", return_value=True), \
+             patch("record_transcript_resume.transcription._prepare_cuda_runtime", side_effect=OSError("DLL unavailable")):
+            self.assertEqual(transcribe(Path("fake.mp3")), [])
+
+        self.assertEqual(fake_faster_whisper.WhisperModel.call_args.kwargs["device"], "cpu")
 
     def test_segments_to_markdown_formats_timestamps(self) -> None:
         segments = [

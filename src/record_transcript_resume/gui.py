@@ -126,7 +126,6 @@ _BUTTON_HELP: dict[str, str] = {
     "●  Violeta atual": "Usa o tema violeta original do Voice Notes.",
     "●  Oceano": "Usa superfícies azul-petróleo com realces ciano.",
     "●  Floresta": "Usa superfícies verdes com realces de folha.",
-    "●  Ameixa": "Usa superfícies ameixa com realces rosados.",
     "●  Âmbar": "Usa superfícies quentes com realces âmbar.",
     "●  Vinho": "Usa superfícies neutras com realces vinho discretos.",
     "●  Machine Red": "Usa Machine Red e Glacier Blue nos realces e textos.",
@@ -148,7 +147,7 @@ _BUTTON_HELP: dict[str, str] = {
     "Falantes": "Configura a identificação de falantes.",
     "Verificar agora": "Executa esta verificação agora.",
     "Testar modelo selecionado": "Verifica se o modelo local de transcrição funciona.",
-    "Testar modelo": "Verifica se o modelo local de transcrição funciona.",
+    "Testar modelo": "Executa uma transcrição de teste e mostra se ela usou GPU ou CPU.",
     "Testar Codex": "Verifica se o Codex está instalado e responde neste computador.",
     "Testar Claude": "Verifica se o Claude está instalado e responde neste computador.",
     "Conectar conta no navegador": "Abre o navegador para conectar a conta do provedor.",
@@ -1152,11 +1151,21 @@ class RecorderApp(ctk.CTk):
             font=("Segoe UI", 10), text_color=_COLORS["muted"], anchor="w",
         )
         self._settings_description.pack(fill=tk.X, padx=18, pady=(0, 8))
-        settings_nav = ctk.CTkFrame(self._settings_panel, fg_color="transparent", corner_radius=0)
-        settings_nav.pack(fill=tk.X, padx=18, pady=(6, 16))
+        settings_workspace = ctk.CTkFrame(self._settings_panel, fg_color="transparent")
+        settings_workspace.pack(fill=tk.X, pady=(6, 4))
+        self._settings_workspace = settings_workspace
+        settings_nav = ctk.CTkFrame(
+            settings_workspace, width=170, height=326, corner_radius=12,
+            fg_color=_COLORS["surface_deep"], border_width=1, border_color=_COLORS["border"],
+        )
+        settings_nav.grid_propagate(False)
+        settings_nav.pack(side=tk.LEFT, anchor=tk.N, padx=(18, 0), pady=(0, 12))
         self._settings_navigation = settings_nav
+        self._settings_content = ctk.CTkFrame(settings_workspace, fg_color="transparent")
+        self._settings_content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._settings_section_buttons: dict[str, ctk.CTkButton] = {}
         self._settings_tab_indicators: dict[str, ctk.CTkFrame] = {}
+        self._settings_navigation_rows: list[ctk.CTkFrame] = []
         settings_sections = [
             ("updates", "Atualizações", "Versão instalada, novidades e atualização do aplicativo."),
             ("transcription", "Transcrição", "Idioma, modelo local e identificação de falantes."),
@@ -1165,26 +1174,42 @@ class RecorderApp(ctk.CTk):
             ("appearance", "Aparência", "Escolha o tema de cores do aplicativo."),
             ("verification", "Diagnóstico", "Verifique a instalação e teste áudio, Whisper e serviços de IA."),
         ]
+        section_icons = ("↻", "≋", "✧", "▤", "◌", "✓")
         for index, (section, label, help_text) in enumerate(settings_sections):
+            row = ctk.CTkFrame(settings_nav, fg_color="transparent")
+            row.grid(row=index, column=0, sticky="ew", padx=7, pady=(7 if index == 0 else 2, 2))
+            self._settings_navigation_rows.append(row)
+            indicator = ctk.CTkFrame(row, width=3, height=40, corner_radius=2, fg_color="transparent")
+            indicator.pack(side=tk.LEFT, padx=(0, 3))
+            indicator.pack_propagate(False)
+            self._settings_tab_indicators[section] = indicator
             button = ctk.CTkButton(
-                settings_nav, text=label, command=lambda key=section: self._show_settings_section(key),
-                width=106, height=36, corner_radius=5, fg_color="transparent", hover_color=_theme_color("#22324F"),
+                row, text=f"{section_icons[index]}   {label}",
+                command=lambda key=section: self._show_settings_section(key),
+                width=145, height=40, corner_radius=8, anchor="w",
+                fg_color="transparent", hover_color=_COLORS["surface_action_hover"],
                 text_color=_COLORS["muted"], font=("Segoe UI", 11, "bold"),
             )
             button._help_text = help_text
-            button.grid(row=0, column=index, sticky="ew", padx=0, pady=(0, 4))
+            button.pack(side=tk.LEFT, fill=tk.X, expand=True)
             self._settings_section_buttons[section] = button
-            indicator = ctk.CTkFrame(settings_nav, height=2, corner_radius=0, fg_color="transparent")
-            indicator.grid(row=1, column=index, sticky="ew", padx=10)
-            self._settings_tab_indicators[section] = indicator
-            settings_nav.grid_columnconfigure(index, weight=0)
-        self._settings_navigation_columns = len(settings_sections)
-        self._settings_tab_width = 0
-        settings_nav.bind("<Configure>", lambda event: self._layout_settings_navigation(event.width), add="+")
+        settings_nav.grid_columnconfigure(0, weight=1)
+        self._settings_navigation_compact: bool | None = None
+        settings_workspace.bind("<Configure>", lambda event: self._layout_settings_navigation(event.width), add="+")
         self._settings_sections = {
-            key: ctk.CTkFrame(self._settings_panel, fg_color="transparent")
-            for key in ("updates", "verification", "provider", "profiles", "transcription", "appearance")
+            key: ctk.CTkFrame(self._settings_content, fg_color="transparent")
+            for key, _label, _help in settings_sections
         }
+        for key, label, _help in settings_sections:
+            heading = ctk.CTkFrame(self._settings_sections[key], fg_color="transparent")
+            heading.pack(fill=tk.X, padx=18, pady=(3, 12))
+            ctk.CTkLabel(
+                heading, text=label, font=("Segoe UI", 15, "bold"),
+                text_color=_COLORS["text"], anchor="w",
+            ).pack(side=tk.LEFT)
+            ctk.CTkFrame(
+                heading, height=1, corner_radius=0, fg_color=_COLORS["border"],
+            ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(12, 0))
 
         def settings_card(parent: tk.Misc, title_text: str, detail: str) -> ctk.CTkFrame:
             card = ctk.CTkFrame(parent, fg_color=_theme_color("#111A2C"), corner_radius=12)
@@ -3830,7 +3855,7 @@ class RecorderApp(ctk.CTk):
             if isinstance(candidate, dict) and candidate.get("type") in {"done", "error"}:
                 event = candidate
         if process.returncode == 0 and event is not None and event.get("type") == "done":
-            self._post_to_ui(self._finish_local_transcription_test, model_size, True, "")
+            self._post_to_ui(self._finish_local_transcription_test, model_size, True, str(event.get("device", "")))
             return
 
         error_type = str(event.get("error_type", "")) if event else ""
@@ -3846,8 +3871,9 @@ class RecorderApp(ctk.CTk):
         self.local_transcription_test_button.configure(state=tk.NORMAL, text="Testar modelo")
         self.install_local_test_button.configure(state=tk.NORMAL, text="Testar modelo selecionado")
         if succeeded:
+            processor = "GPU NVIDIA" if detail == "cuda" else "CPU"
             self.local_transcription_test_status.set(
-                f"OK · modelo {model_size} carregou e processou o teste local."
+                f"OK · modelo {model_size} processou o teste na {processor}."
             )
             self.local_transcription_test_label.configure(text_color=_theme_color("#55D6A0"))
         else:
@@ -5620,6 +5646,9 @@ class RecorderApp(ctk.CTk):
 
     def _hide_to_tray(self) -> None:
         """Remove the widget from the desktop while keeping its tray controls."""
+        # The tooltip is its own top-level window. Hiding only the app leaves
+        # that popup visible, and a pending hover timer can show it afterward.
+        self._hide_button_tooltip()
         self._close_browser_audio()
         if not self._tray_available:
             # Keep a reachable window if Windows could not expose the tray icon.
@@ -5857,12 +5886,28 @@ class RecorderApp(ctk.CTk):
                 label.configure(wraplength=available)
 
     def _layout_settings_navigation(self, width: int) -> None:
-        tab_width = min(120, max(84, int(width / 6)))
-        if tab_width == self._settings_tab_width:
+        compact = width < 640
+        if compact == self._settings_navigation_compact:
             return
-        self._settings_tab_width = tab_width
-        for button in self._settings_section_buttons.values():
-            button.configure(width=tab_width)
+        self._settings_navigation_compact = compact
+        self._settings_navigation.pack_forget()
+        self._settings_content.pack_forget()
+        for row in self._settings_navigation_rows:
+            row.grid_forget()
+        if compact:
+            self._settings_navigation.configure(height=166)
+            self._settings_navigation.grid_columnconfigure(1, weight=1)
+            for index, row in enumerate(self._settings_navigation_rows):
+                row.grid(row=index // 2, column=index % 2, sticky="ew", padx=7, pady=(7 if index < 2 else 2, 2))
+            self._settings_navigation.pack(fill=tk.X, padx=18, pady=(0, 12))
+            self._settings_content.pack(fill=tk.X)
+        else:
+            self._settings_navigation.configure(height=326)
+            self._settings_navigation.grid_columnconfigure(1, weight=0)
+            for index, row in enumerate(self._settings_navigation_rows):
+                row.grid(row=index, column=0, sticky="ew", padx=7, pady=(7 if index == 0 else 2, 2))
+            self._settings_navigation.pack(side=tk.LEFT, anchor=tk.N, padx=(18, 0), pady=(0, 12))
+            self._settings_content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
     def _layout_theme_choices(self, width: int) -> None:
         if not hasattr(self, "_theme_choice_buttons"):
@@ -6112,7 +6157,7 @@ class RecorderApp(ctk.CTk):
             self._settings_description.pack_forget()
         elif self._maximized and page == "settings":
             if not self._settings_kicker.winfo_manager():
-                self._settings_kicker.pack(fill=tk.X, padx=18, pady=(18, 2), before=self._settings_navigation)
+                self._settings_kicker.pack(fill=tk.X, padx=18, pady=(18, 2), before=self._settings_workspace)
             if not self._settings_description.winfo_manager():
                 self._settings_description.pack(fill=tk.X, padx=18, pady=(0, 8), after=self._settings_kicker)
         if desktop_context is not None:
@@ -6274,12 +6319,12 @@ class RecorderApp(ctk.CTk):
         for old_panel in self._settings_sections.values():
             if old_panel.winfo_manager():
                 old_panel.pack_forget()
-        panel.pack(fill=tk.X, padx=0, pady=(0, 4))
+        panel.pack(fill=tk.X, pady=(0, 4))
         for key, button in self._settings_section_buttons.items():
             active = key == section
             button.configure(
-                fg_color="transparent",
-                text_color=_COLORS["accent"] if active else _COLORS["muted"],
+                fg_color=_COLORS["surface_action"] if active else "transparent",
+                text_color=_COLORS["text"] if active else _COLORS["muted"],
             )
             self._settings_tab_indicators[key].configure(fg_color=_COLORS["accent"] if active else "transparent")
         self._active_settings_section = section

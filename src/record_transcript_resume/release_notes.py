@@ -14,18 +14,12 @@ from record_transcript_resume.paths import app_data_dir
 # Keep these highlights in step with the changes shipped in each release.
 # The version comes from bundled project metadata, as it does for the updater.
 CURRENT_HIGHLIGHTS = (
-    ("Vários áudios na fila",
-     "Selecione vários áudios ou pastas na Biblioteca, ou importe vários arquivos em Arquivo. O processamento segue um por vez."),
-    ("Grave enquanto processa",
-     "Continue gravando uma nova reunião enquanto o app processa os áudios anteriores. Consulte a previsão aproximada de tempo antes de começar."),
-    ("Encontre suas reuniões",
-     "Use um nome sugerido pela IA e uma descrição curta do assunto para identificar as reuniões. Também é possível sugerir nomes para reuniões já processadas."),
-    ("Biblioteca e documentos",
-     "Consulte as gravações mais recentes primeiro e abra documentos em PDF sem precisar escolher onde salvar uma cópia."),
-    ("Ajustes e processos mais claros",
-     "Encontre as configurações por assunto. Em Processos, acompanhe a fila em uma lista única e limpe os concluídos sem apagar seus arquivos."),
-    ("Aviso de nova versão",
-     "O app busca atualizações ao abrir e periodicamente. Quando há uma versão nova, um aviso discreto no topo leva direto a Atualizações."),
+    ("Transcrição acelerada automaticamente",
+     "Você não precisa configurar nada. Se houver uma GPU NVIDIA compatível, o Whisper a usa automaticamente. Se a GPU não estiver disponível ou falhar, o app usa a CPU. Para conferir, vá em Ajustes → Diagnóstico → Teste do Whisper local e clique em Testar modelo. O resultado mostra se o teste usou GPU ou CPU."),
+    ("Ajustes mais fáceis de navegar",
+     "As seções de Ajustes agora ficam em uma barra lateral, com a seção atual destacada. Em janelas estreitas, a navegação se adapta ao espaço disponível."),
+    ("Ocultar sem deixar a dica na tela",
+     "Ao ocultar o app, a dica do botão também desaparece e não fica solta na área de trabalho."),
 )
 
 

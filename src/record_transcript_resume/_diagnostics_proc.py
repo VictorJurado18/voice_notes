@@ -19,8 +19,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from record_transcript_resume.transcription import test_local_transcription
 
-        test_local_transcription(model_size)
-        print(json.dumps({"type": "done", "model": model_size}), flush=True)
+        device = test_local_transcription(model_size)
+        print(json.dumps({"type": "done", "model": model_size, "device": device}), flush=True)
         return 0
     except Exception as exc:
         from record_transcript_resume.log import log_exception

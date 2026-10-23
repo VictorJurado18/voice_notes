@@ -25,7 +25,30 @@ if ($Clean) {
 }
 
 Write-Host "Installing packaging tools..."
-& $Python -m pip install -e "$ProjectRoot[build]"
+& $Python -m pip install -e "$ProjectRoot[build,gpu]"
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not install packaging and CUDA dependencies."
+}
+
+$SitePackages = Join-Path $ProjectRoot ".venv\Lib\site-packages"
+$CudaBundleArgs = @()
+foreach ($component in @("cublas", "cudnn", "cuda_nvrtc")) {
+    $binaryDir = Join-Path $SitePackages "nvidia\$component\bin"
+    if (-not (Test-Path -LiteralPath $binaryDir)) {
+        throw "Missing NVIDIA runtime library directory: $binaryDir"
+    }
+    $CudaBundleArgs += @("--add-binary", "$binaryDir;.")
+}
+foreach ($package in @("nvidia_cublas_cu12", "nvidia_cudnn_cu12", "nvidia_cuda_nvrtc_cu12")) {
+    $license = Get-ChildItem -Path $SitePackages -Directory -Filter "$package-*.dist-info" |
+        ForEach-Object { Join-Path $_.FullName "licenses\License.txt" } |
+        Where-Object { Test-Path -LiteralPath $_ } |
+        Select-Object -First 1
+    if (-not $license) {
+        throw "Missing NVIDIA runtime license for $package"
+    }
+    $CudaBundleArgs += @("--add-data", "$license;licenses\NVIDIA\$package")
+}
 
 Write-Host "Building standalone Voice Notes application..."
 & $Python -m PyInstaller `
@@ -44,6 +67,7 @@ Write-Host "Building standalone Voice Notes application..."
     --collect-all customtkinter `
     --collect-all faster_whisper `
     --collect-all ctranslate2 `
+    @CudaBundleArgs `
     --collect-all av `
     --collect-all onnxruntime `
     --collect-all tokenizers `
@@ -69,6 +93,22 @@ Write-Host "Building standalone Voice Notes application..."
 
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed."
+}
+
+# PyInstaller may also discover some NVIDIA DLLs under their wheel paths.
+# Keep the explicitly bundled root copies and omit identical duplicates.
+$InternalDir = Join-Path $AppDistDir "_internal"
+foreach ($component in @("cublas", "cudnn", "cuda_nvrtc")) {
+    $nestedDir = Join-Path $InternalDir "nvidia\$component\bin"
+    if (-not (Test-Path -LiteralPath $nestedDir)) { continue }
+    foreach ($duplicate in Get-ChildItem -LiteralPath $nestedDir -File -Filter "*.dll") {
+        $primary = Join-Path $InternalDir $duplicate.Name
+        if ((Test-Path -LiteralPath $primary) -and
+            (Get-FileHash -LiteralPath $duplicate.FullName -Algorithm SHA256).Hash -eq
+            (Get-FileHash -LiteralPath $primary -Algorithm SHA256).Hash) {
+            Remove-Item -LiteralPath $duplicate.FullName -Force
+        }
+    }
 }
 
 if ($SkipInstaller) {
