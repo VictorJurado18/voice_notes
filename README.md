@@ -10,6 +10,7 @@
 ![Plataforma](https://img.shields.io/badge/Windows-10%20%7C%2011%20(64--bit)-0078D6?logo=windows&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![Whisper](https://img.shields.io/badge/transcri%C3%A7%C3%A3o-Whisper%20local-6E56CF)
+[![Licença: MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-green)](LICENSE)
 
 [**Baixar o instalador**](https://github.com/VictorJurado18/voice-notes-releases/releases/latest) ·
 [Primeiros passos](#primeiros-passos) ·
@@ -33,6 +34,7 @@ O **Voice Notes** captura o microfone, o áudio do sistema ou ambos, transcreve 
 - [Privacidade](#privacidade)
 - [Tecnologias](#tecnologias)
 - [Contribuindo](#contribuindo)
+- [Licença](#licença)
 
 ## Recursos
 
@@ -153,6 +155,10 @@ A importação preserva o arquivo original e cria uma cópia na pasta de resulta
 Configuração do ambiente, CLI, testes, build do instalador e processo de release estão em [DEVELOPMENT.md](DEVELOPMENT.md). Bugs e sugestões são bem-vindos nas [issues](https://github.com/VictorJurado18/voice_notes/issues).
 
 Os instaladores publicados e o histórico de versões ficam em [voice-notes-releases](https://github.com/VictorJurado18/voice-notes-releases/releases).
+
+## Licença
+
+Distribuído sob a [licença MIT](LICENSE). Componentes de terceiros incluídos no instalador mantêm suas próprias licenças — veja [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ---
 
