@@ -101,7 +101,17 @@ jobs:
           if (-not (Test-Path $installer)) { throw "Installer was not generated: $installer" }
           $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           $commit = (git rev-parse HEAD).Trim()
-          $notes = "Instalador Windows gerado automaticamente a partir do commit $commit.`n`nSHA-256: $hash"
+          $notesPath = "src\record_transcript_resume\resources\release-notes\$version.json"
+          if (-not (Test-Path -LiteralPath $notesPath)) { throw "Missing release notes for $version." }
+          $releaseNotes = Get-Content -LiteralPath $notesPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($releaseNotes.version -ne $version -or -not $releaseNotes.highlights.Count) {
+            throw "Release notes do not match $version or have no highlights."
+          }
+          $highlights = foreach ($item in $releaseNotes.highlights) {
+            if (-not $item.title -or -not $item.detail) { throw "A release highlight is incomplete." }
+            "- **$($item.title)** — $($item.detail)"
+          }
+          $notes = "## O que há de novo`n`n" + ($highlights -join "`n") + "`n`nInstalador Windows gerado automaticamente a partir do commit $commit.`n`nSHA-256: $hash"
           if ("${{ steps.current_release.outputs.release_exists }}" -eq "true") {
             gh release upload $tag $installer --repo $env:GITHUB_REPOSITORY
           } else {

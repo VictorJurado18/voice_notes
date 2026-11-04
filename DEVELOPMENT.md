@@ -79,7 +79,7 @@ O instalador resultante é `dist\VoiceNotes-Setup-x.y.z.exe`, com a versão defi
 Para uma alteração funcional que será publicada:
 
 1. Atualize a **mesma versão** em `pyproject.toml` e `installer/VoiceNotes.iss`.
-2. Atualize os destaques em `src/record_transcript_resume/release_notes.py` com o que realmente entrou na versão.
+2. Crie `src/record_transcript_resume/resources/release-notes/x.y.z.json` com a mesma versão e os destaques reais. O app e a descrição da release no GitHub leem esse arquivo; o teste de versão falha se ele faltar ou não corresponder ao pacote.
 3. Execute os testes e confira a gravação, transcrição, resumo, Biblioteca e inicialização pela bandeja em uma instalação de teste.
 4. Faça a PR. O merge na `main` aciona o GitHub Actions, que testa e tenta gerar e publicar `VoiceNotes-Setup-x.y.z.exe` nas [releases deste repositório](https://github.com/VictorJurado18/voice_notes/releases).
 

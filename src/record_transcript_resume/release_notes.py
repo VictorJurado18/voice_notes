@@ -11,21 +11,36 @@ from uuid import uuid4
 from record_transcript_resume.paths import app_data_dir
 
 
-# Keep these highlights in step with the changes shipped in each release.
-# The version comes from bundled project metadata, as it does for the updater.
-CURRENT_HIGHLIGHTS = (
-    ("Atualizações pelo repositório Voice Notes",
-     "As próximas versões serão publicadas junto com o código do app. Esta versão faz a transição automaticamente, inclusive para instalações que ainda consultam o repositório antigo."),
-    ("Biblioteca com mais espaço para os arquivos",
-     "A seleção agora mostra as ações alinhadas em uma faixa compacta. Informações adicionais ficam em Detalhes, deixando mais linhas da pasta visíveis."),
-)
-
-
 def _version(value: object) -> tuple[int, ...] | None:
     if not isinstance(value, str) or not re.fullmatch(r"\d+(?:\.\d+){1,3}", value):
         return None
     parts = tuple(map(int, value.split(".")))
     return parts + (0,) * (4 - len(parts))
+
+
+def load_highlights(version: str) -> tuple[tuple[str, str], ...]:
+    """Load the notes shipped with this exact version of the app."""
+    if _version(version) is None:
+        raise ValueError("Versão inválida para as notas de lançamento.")
+    path = Path(__file__).resolve().parent / "resources" / "release-notes" / f"{version}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Notas da versão {version} não encontradas ou inválidas.") from exc
+    if not isinstance(data, dict) or data.get("version") != version:
+        raise ValueError(f"As notas não correspondem à versão {version}.")
+    entries = data.get("highlights")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError(f"A versão {version} não tem novidades descritas.")
+    highlights: list[tuple[str, str]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("Formato inválido das notas de lançamento.")
+        heading, detail = entry.get("title"), entry.get("detail")
+        if not isinstance(heading, str) or not heading.strip() or not isinstance(detail, str) or not detail.strip():
+            raise ValueError("Uma novidade está sem título ou descrição.")
+        highlights.append((heading.strip(), detail.strip()))
+    return tuple(highlights)
 
 
 def _install_history() -> tuple[str, str]:
