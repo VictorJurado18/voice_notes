@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from record_transcript_resume.errors import SynthesisError, TranscriptionError
-from record_transcript_resume.pipeline import PipelineResult, retry_summary, run
+from record_transcript_resume.pipeline import PipelineResult, additional_summary_from_audio, retry_summary, run
 from record_transcript_resume.synthesis import SynthesisResult
 from record_transcript_resume.transcription import Segment
 
@@ -232,6 +232,44 @@ class PipelineTests(unittest.TestCase):
                 retry_summary(transcript_path)
 
         self.assertEqual(summary_path.read_text(encoding="utf-8"), "# Existing summary\n")
+
+    def test_retry_summary_adds_distinct_formats_without_replacing_previous_files(self) -> None:
+        folder = Path(self.tmp) / "saved-meeting"
+        folder.mkdir()
+        transcript = folder / "transcription.md"
+        transcript.write_text("# Transcription\n\nSaved text.", encoding="utf-8")
+        original = folder / "summary.md"
+        original.write_text("# Original\n", encoding="utf-8")
+
+        with patch("record_transcript_resume.pipeline.generate", return_value=_fake_synthesis()):
+            first = retry_summary(transcript, preserve_existing=True, variant_label="Plano de ação")
+            second = retry_summary(transcript, preserve_existing=True, variant_label="Plano de ação")
+
+        self.assertEqual(first.name, "summary-plano-de-acao.md")
+        self.assertEqual(second.name, "summary-plano-de-acao-2.md")
+        self.assertEqual(original.read_text(encoding="utf-8"), "# Original\n")
+        self.assertEqual(first.read_text(encoding="utf-8"), "# Meeting\n\nContent.\n")
+        self.assertEqual(second.read_text(encoding="utf-8"), "# Meeting\n\nContent.\n")
+
+    def test_summary_only_audio_can_create_another_format(self) -> None:
+        folder = Path(self.tmp) / "summary-only"
+        folder.mkdir()
+        audio = folder / "recording.mp3"
+        audio.write_bytes(b"original-audio")
+        primary = folder / "summary.md"
+        primary.write_text("# Original\n", encoding="utf-8")
+
+        with patch("record_transcript_resume.pipeline.transcribe", return_value=_fake_segments()) as transcribe_audio, \
+             patch("record_transcript_resume.pipeline.generate", return_value=_fake_synthesis()):
+            variant = additional_summary_from_audio(
+                audio, summary_template="action_plan", variant_label="Plano de ação",
+            )
+
+        self.assertEqual(variant.name, "summary-plano-de-acao.md")
+        self.assertEqual(primary.read_text(encoding="utf-8"), "# Original\n")
+        self.assertEqual(audio.read_bytes(), b"original-audio")
+        self.assertFalse((folder / "transcription.md").exists())
+        transcribe_audio.assert_called_once()
 
 
 if __name__ == "__main__":

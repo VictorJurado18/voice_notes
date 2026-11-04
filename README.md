@@ -40,10 +40,10 @@ O **Voice Notes** captura o microfone, o áudio do sistema ou ambos e, por padr�
 
 | | |
 |---|---|
-| 🎙️ **Gravação** | Microfone, áudio do sistema ou os dois ao mesmo tempo. O áudio é salvo antes de qualquer processamento. |
+| 🎙️ **Gravação** | Microfone, áudio do sistema ou os dois ao mesmo tempo. Parada automática após silêncio prolongado, ajustável ou desligável. O áudio é salvo antes de qualquer processamento. |
 | 📝 **Transcrição local** | Whisper rodando na sua máquina, com aceleração por GPU NVIDIA e fallback automático para CPU. |
 | 👥 **Separação de falantes** | Identificação opcional de *Pessoa 1*, *Pessoa 2*… com pyannote, também local. |
-| ✨ **Resumos com IA** | Modelos de resumo para reunião, aula, entrevista e plano de ação. |
+| ✨ **Resumos com IA** | Modelos para reunião, aula, entrevista e plano de ação. Gere formatos adicionais para a mesma transcrição sem substituir os anteriores. |
 | 📥 **Importação** | Arquivos de áudio, transcrições prontas (`.txt`/`.md`) e vídeos do YouTube autorizados. |
 | 📚 **Biblioteca** | Busca, filtros, favoritos, etiquetas, edição e exportação em PDF ou DOCX. |
 | ⚙️ **Processamento em segundo plano** | Fila de trabalhos com retomada, ícone na bandeja e atualizações pelo próprio app. |
@@ -62,7 +62,7 @@ O instalador já inclui tudo o que o app precisa — não é necessário instala
 1. **Instale.** Baixe `VoiceNotes-Setup-x.y.z.exe` na [página de versões](https://github.com/VictorJurado18/voice_notes/releases/latest) e execute. Se quiser resumos via Codex CLI ou Claude Code, marque a instalação opcional deles.
 2. **Configure a gravação.** Abra **Voice Notes** pelo menu Iniciar. Na página **Gravar**, escolha a **Fonte de áudio** e confira a pasta em **Salvar em**.
 3. **Escolha o resultado.** Em **Depois de parar**, selecione **Salvar só o áudio**, **Áudio + transcrição** ou **Áudio + transcrição + resumo**.
-4. **Grave.** Clique em **Iniciar gravação** e, ao terminar, em **Parar**. Acompanhe o processamento em **Processos** — você pode ocultar a janela enquanto ele roda.
+4. **Grave.** Clique em **Iniciar gravação** e, ao terminar, em **Parar**. Em **Parar após silêncio**, o padrão é 10 minutos; você pode escolher outro prazo ou desligar o sensor. Acompanhe o processamento em **Processos** — você pode ocultar a janela enquanto ele roda.
 
 Cada gravação ganha sua própria pasta, por padrão em `Música\record-transcript-resume`:
 
@@ -73,7 +73,7 @@ recording-AAAAMMDD-HHMMSS/
 └── summary.md         # se resumido
 ```
 
-Gravações salvas só como áudio podem ser processadas depois pela **Biblioteca**.
+Gravações salvas só como áudio podem ser processadas depois pela **Biblioteca**. Para criar outro formato, selecione uma gravação já resumida e clique em **Gerar outro resumo**. Se ela foi criada no modo **Somente resumo**, o áudio será transcrito novamente. Os novos arquivos ficam ao lado de `summary.md` (por exemplo, `summary-plano-de-acao.md`); use **Ver resumos** para abrir cada versão.
 
 ## Configuração
 

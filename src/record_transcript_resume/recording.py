@@ -61,6 +61,10 @@ class RecordingService:
         return [0.0] * 16
 
     @property
+    def silence_seconds(self) -> float | None:
+        return getattr(self._backend, "silence_seconds", None)
+
+    @property
     def device_info(self) -> dict[str, str]:
         from record_transcript_resume.windows_audio_backend import WindowsAudioBackend
         if isinstance(self._backend, WindowsAudioBackend):

@@ -3,8 +3,10 @@
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
+import re
 import shutil
 import time
+import unicodedata
 
 from record_transcript_resume.errors import SynthesisError, TranscriptionError
 from record_transcript_resume.meeting_naming import is_meeting_folder, recording_time, rename_meeting, safe_name
@@ -218,12 +220,14 @@ def retry_summary(
     summary_template: SummaryTemplate = DEFAULT_TEMPLATE,
     on_status: object = None,
     additional_instructions: str = "",
+    preserve_existing: bool = False,
+    variant_label: str = "",
 ) -> Path:
-    """Regenerate only ``summary.md`` from an existing saved transcription.
+    """Generate a summary from a saved transcription without touching the audio.
 
     The original MP3 and ``transcription.md`` stay untouched. If the provider
-    still fails, the previous summary is preserved so a useful error never
-    replaces an earlier successful result.
+    still fails, existing summaries are preserved. With ``preserve_existing``,
+    each successful generation gets a distinct file beside ``summary.md``.
     """
     if not transcript_path.is_file():
         raise FileNotFoundError(f"Transcription file not found: {transcript_path}")
@@ -247,9 +251,16 @@ def retry_summary(
     if synthesis.summary_md.lstrip().startswith("# Summary unavailable"):
         raise SynthesisError("The provider did not return a valid summary. Try again after checking the login.")
 
-    summary_path = transcript_path.with_name("summary.md")
-    summary_path.write_text(synthesis.summary_md.rstrip() + "\n", encoding="utf-8")
-    if synthesis.topic:
+    summary_path = (
+        _next_summary_variant(transcript_path.parent, variant_label or summary_template)
+        if preserve_existing else transcript_path.with_name("summary.md")
+    )
+    if preserve_existing:
+        with summary_path.open("x", encoding="utf-8") as destination:
+            destination.write(synthesis.summary_md.rstrip() + "\n")
+    else:
+        summary_path.write_text(synthesis.summary_md.rstrip() + "\n", encoding="utf-8")
+    if synthesis.topic and not preserve_existing:
         try:
             from record_transcript_resume.meeting_topics import save_topic
             save_topic(summary_path.parent, synthesis.topic)
@@ -257,6 +268,59 @@ def retry_summary(
             import logging
             logging.getLogger(__name__).warning("Resumo salvo sem descrição curta", exc_info=True)
     return summary_path
+
+
+def additional_summary_from_audio(
+    audio_path: Path,
+    provider: SummaryProvider = DEFAULT_PROVIDER,
+    summary_template: SummaryTemplate = DEFAULT_TEMPLATE,
+    *,
+    language: str = "pt",
+    model_size: str = "small",
+    transcription_provider: str = "local",
+    additional_instructions: str = "",
+    variant_label: str = "",
+    on_status: object = None,
+) -> Path:
+    """Create another summary when a summary-only recording has no saved transcript."""
+    if not audio_path.is_file():
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+    if callable(on_status):
+        on_status("Transcribing audio for another summary...")
+    segments = transcribe(
+        audio_path, language=language, model_size=model_size,
+        provider=transcription_provider,
+    )
+    transcript_text = segments_to_markdown(segments)
+    if not transcript_text.strip():
+        raise TranscriptionError("The selected audio has no transcribed text.")
+    if callable(on_status):
+        on_status("Generating another summary...")
+    recorded_at = recording_time(audio_path) or datetime.fromtimestamp(audio_path.stat().st_mtime)
+    synthesis = generate(
+        transcript_text, recorded_at.strftime("%Y-%m-%d"), provider=provider,
+        summary_template=summary_template, additional_instructions=additional_instructions,
+    )
+    if synthesis.summary_md.lstrip().startswith("# Summary unavailable"):
+        raise SynthesisError("The provider did not return a valid summary. Try again after checking the login.")
+    summary_path = _next_summary_variant(audio_path.parent, variant_label or summary_template)
+    with summary_path.open("x", encoding="utf-8") as destination:
+        destination.write(synthesis.summary_md.rstrip() + "\n")
+    return summary_path
+
+
+def _next_summary_variant(folder: Path, label: str) -> Path:
+    ascii_label = unicodedata.normalize("NFKD", label).encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_label.casefold()).strip("-")[:60] or "outro"
+    base = folder / f"summary-{slug}.md"
+    if not base.exists():
+        return base
+    number = 2
+    while True:
+        candidate = folder / f"summary-{slug}-{number}.md"
+        if not candidate.exists():
+            return candidate
+        number += 1
 
 
 def _transcript_body(text: str) -> str:

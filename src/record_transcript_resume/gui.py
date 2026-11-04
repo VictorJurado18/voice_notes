@@ -529,6 +529,7 @@ class RecorderApp(ctk.CTk):
         self._compact_status = tk.StringVar(value="PRONTO")
         self.recording_limit_value = tk.StringVar(value="")
         self.recording_limit_unit = tk.StringVar(value="minutos")
+        self.recording_silence_limit = tk.StringVar(value="10 minutos")
         self.recording_limit_hint = tk.StringVar(value="Sem parada automática")
         self.recording_output_mode = tk.StringVar(value="audio")
         self.recording_output_choice = tk.StringVar(value=_RECORDING_OUTPUT_LABELS["audio"])
@@ -537,6 +538,7 @@ class RecorderApp(ctk.CTk):
         )
         self._recording_processing_options: dict[str, object] = {}
         self._recording_deadline: float | None = None
+        self._recording_silence_seconds: int | None = None
         self._processing_started_at: float | None = None
         self._processing_activity = ""
         self._processing_feedback = tk.StringVar(value="")
@@ -983,6 +985,22 @@ class RecorderApp(ctk.CTk):
             dropdown_text_color=_COLORS["text"], font=("Segoe UI", 13),
         )
         self.recording_limit_selector.pack(side=tk.LEFT, padx=(8, 0))
+        silence_row = ctk.CTkFrame(save_section, fg_color="transparent")
+        silence_row.pack(fill=tk.X, padx=16, pady=(0, 15))
+        ctk.CTkLabel(
+            silence_row, text="Parar após silêncio", font=("Segoe UI", 13, "bold"),
+            text_color=_COLORS["text"], width=150, anchor="w",
+        ).pack(side=tk.LEFT)
+        self.recording_silence_selector = ctk.CTkComboBox(
+            silence_row, variable=self.recording_silence_limit,
+            values=["Desligado", "5 minutos", "10 minutos", "20 minutos", "30 minutos"],
+            state="readonly", width=145, height=34, corner_radius=9,
+            fg_color=_theme_color("#0D1525"), border_color=_theme_color("#2A3A58"),
+            button_color=_theme_color("#263550"), button_hover_color=_theme_color("#34476B"),
+            text_color=_COLORS["text"], dropdown_fg_color=_theme_color("#162136"),
+            dropdown_text_color=_COLORS["text"], font=("Segoe UI", 13),
+        )
+        self.recording_silence_selector.pack(side=tk.LEFT)
         result_section = ctk.CTkFrame(capture_card, fg_color=_theme_color("#141E32"), corner_radius=12)
         self._record_result_section = result_section
         result_section.pack(fill=tk.X, pady=(0, 10))
@@ -5834,6 +5852,7 @@ class RecorderApp(ctk.CTk):
         self.output_browse_button.configure(state=state)
         self.recording_limit_entry.configure(state=state)
         self.recording_limit_selector.configure(state="readonly" if state == tk.NORMAL else state)
+        self.recording_silence_selector.configure(state="readonly" if state == tk.NORMAL else state)
         self.profile_selector.configure(state="readonly" if state == tk.NORMAL else state)
         self.meeting_instructions_editor.configure(state=state)
         if hasattr(self, "_focus_record_result_selector"):
@@ -8320,10 +8339,16 @@ class RecorderApp(ctk.CTk):
         self._library_file_names["TRANSCRIÇÃO"].set(
             "Pronta para ler e editar" if item.transcript_path else "Ainda não criada"
         )
+        saved_summaries = self._saved_summaries(item.folder)
         self._library_file_names["RESUMO"].set(
+            f"{len(saved_summaries)} versões para ler e exportar" if item.summary_available and len(saved_summaries) > 1 else
             "Pronto para ler e exportar" if item.summary_available else
             "Falhou; tente novamente" if item.summary_path else
             "Aguardando transcrição" if not item.transcript_path else "Ainda não criado"
+        )
+        self.library_summary_button.configure(text="Gerar outro resumo" if item.summary_available else "Gerar resumo")
+        self.library_open_summary_button.configure(
+            text="Ver resumos" if len(saved_summaries) > 1 else "Ler / editar"
         )
         self.library_favorite_button.configure(text="★ Remover favorito" if item.favorite else "☆ Favoritar")
         self.library_tags_text.set(
@@ -8341,7 +8366,7 @@ class RecorderApp(ctk.CTk):
             (self.library_edit_button, item.transcript_path is not None),
             (self.library_open_summary_button, item.summary_available),
             (self.library_process_button, item.mp3_path is not None and item.transcript_path is None),
-            (self.library_summary_button, item.transcript_path is not None and not item.summary_available),
+            (self.library_summary_button, item.transcript_path is not None or (item.mp3_path is not None and item.summary_available)),
         ):
             if available:
                 button.pack(side=tk.RIGHT)
@@ -8687,7 +8712,40 @@ class RecorderApp(ctk.CTk):
         if item is None or item.summary_path is None:
             messagebox.showinfo("Resumo indisponível", "Esta gravação ainda não tem um resumo para abrir.")
             return
-        self._open_library_document(item.summary_path, "RESUMO · EDITE E SALVE DIRETAMENTE NO APP", is_transcript=False)
+        summaries = self._saved_summaries(item.folder)
+        if len(summaries) == 1:
+            self._open_library_document(summaries[0], "RESUMO · EDITE E SALVE DIRETAMENTE NO APP", is_transcript=False)
+            return
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Resumos desta gravação")
+        self._fit_dialog(dialog, 540, 420, 400, 320)
+        dialog.configure(fg_color=_COLORS["bg"])
+        dialog.transient(self)
+        dialog.grab_set()
+        shell = ctk.CTkScrollableFrame(dialog, fg_color=_COLORS["surface"])
+        shell.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        ctk.CTkLabel(
+            shell, text="Resumos desta gravação", font=("Segoe UI", 15, "bold"),
+            text_color=_COLORS["text"], anchor="w",
+        ).pack(fill=tk.X, padx=12, pady=(12, 8))
+
+        def open_summary(path: Path) -> None:
+            dialog.destroy()
+            self._open_library_document(path, f"RESUMO · {path.name}", is_transcript=False)
+
+        for path in summaries:
+            label = "Resumo inicial" if path.name == "summary.md" else path.stem.removeprefix("summary-").replace("-", " ").capitalize()
+            ctk.CTkButton(
+                shell, text=f"{label}  ·  {path.name}", command=lambda selected=path: open_summary(selected),
+                height=36, anchor="w", fg_color=_theme_color("#263550"),
+                hover_color=_theme_color("#34476B"), text_color=_COLORS["text"],
+            ).pack(fill=tk.X, padx=12, pady=3)
+
+    @staticmethod
+    def _saved_summaries(folder: Path) -> list[Path]:
+        primary = folder / "summary.md"
+        variants = sorted(path for path in folder.glob("summary-*.md") if path.is_file())
+        return ([primary] if primary.is_file() else []) + variants
 
     def _open_library_document(self, path: Path, title: str, *, is_transcript: bool) -> None:
         if (getattr(self, "_browser_delete_pending", None) is not None
@@ -9010,10 +9068,10 @@ class RecorderApp(ctk.CTk):
 
     def _regenerate_selected_summary(self) -> None:
         item = self._selected_library_item()
-        if item is None or item.transcript_path is None:
-            messagebox.showinfo("Transcrição indisponível", "Esta gravação ainda não tem transcrição para resumir.")
+        if item is None or (item.transcript_path is None and (item.mp3_path is None or not item.summary_available)):
+            messagebox.showinfo("Áudio indisponível", "Esta gravação não tem áudio ou transcrição para gerar outro resumo.")
             return
-        self._open_summary_regeneration_dialog(item.transcript_path)
+        self._open_summary_regeneration_dialog(item.transcript_path or item.mp3_path)
 
     def _tray_can_start_meeting(self) -> bool:
         recording = self._service is not None and self._service.state == RecordingState.RECORDING
@@ -9093,10 +9151,18 @@ class RecorderApp(ctk.CTk):
         }
         self._started_at = time.monotonic()
         self._recording_deadline = self._started_at + limit_seconds if limit_seconds else None
+        self._recording_silence_seconds = {
+            "Desligado": None, "5 minutos": 300, "10 minutos": 600,
+            "20 minutos": 1200, "30 minutos": 1800,
+        }[self.recording_silence_limit.get()]
         self._last_output = output_path
         self.status.set("Recording")
         if limit_seconds:
             self.recording_limit_hint.set(f"Parada automática em {self._format_duration(limit_seconds)}")
+        elif self._recording_silence_seconds:
+            self.recording_limit_hint.set(
+                f"Parada após {self._format_duration(self._recording_silence_seconds)} de silêncio"
+            )
         else:
             self.recording_limit_hint.set("Sem parada automática")
         self.last_file.set(str(output_path))
@@ -9105,16 +9171,24 @@ class RecorderApp(ctk.CTk):
         self._set_capture_preferences_state(tk.DISABLED)
         self._update_device_info()
 
-    def _stop_recording(self, automatic: bool = False) -> None:
+    def _stop_recording(self, automatic: bool = False, silence: bool = False) -> None:
         from record_transcript_resume.log import log
         if self._service is None or self._service.state != RecordingState.RECORDING:
             log("GUI: _stop_recording skipped (service None or not recording)")
             return
+        if self._stop_thread is not None and self._stop_thread.is_alive():
+            return
         log("GUI: _stop_recording chamado — iniciando worker thread")
         self._started_at = None
         self._recording_deadline = None
+        self._recording_silence_seconds = None
         self._set_recording_action_state(stop=tk.DISABLED)
-        self.status.set("Tempo concluído · finalizando..." if automatic else "Finalizando gravação...")
+        self.status.set(
+            "Silêncio prolongado · finalizando..." if silence else
+            "Tempo concluído · finalizando..." if automatic else "Finalizando gravação..."
+        )
+        if silence:
+            self._tray.notify("Voice Notes", "Gravação encerrada após silêncio prolongado. Salvando o áudio.")
         self.recording_limit_hint.set("Sem parada automática")
         self._refresh_compact_controls()
         self._stop_thread = threading.Thread(target=self._stop_recording_worker, daemon=True)
@@ -9141,6 +9215,7 @@ class RecorderApp(ctk.CTk):
     def _show_stop_error(self, message: str) -> None:
         self._started_at = None
         self._recording_deadline = None
+        self._recording_silence_seconds = None
         self._recording_failure = message
         self._tray.notify("Gravação interrompida", "A captura parou. Abra o Voice Notes para consultar o erro e verificar o áudio parcial.")
         self.status.set("Falha ao finalizar gravação")
@@ -9163,6 +9238,7 @@ class RecorderApp(ctk.CTk):
         self.device_info_text.set("")
         self._started_at = None
         self._recording_deadline = None
+        self._recording_silence_seconds = None
         self.recording_limit_hint.set("Sem parada automática")
         self._last_output = output_path
         self._sync_recording_meter()
@@ -9663,7 +9739,7 @@ class RecorderApp(ctk.CTk):
         selected_path = Path(selected)
         transcript_path = (
             selected_path.with_name("transcription.md")
-            if selected_path.name.lower() == "summary.md"
+            if selected_path.name.lower() == "summary.md" or selected_path.name.lower().startswith("summary-")
             else selected_path
         )
         if transcript_path.name.lower() != "transcription.md" or not transcript_path.is_file():
@@ -9691,7 +9767,11 @@ class RecorderApp(ctk.CTk):
         ).pack(fill=tk.X, padx=16, pady=(16, 2))
         ctk.CTkLabel(
             shell,
-            text="A transcrição permanece intacta. O resumo atual só será substituído se a nova geração terminar com sucesso.",
+            text=(
+                "O áudio será transcrito novamente para criar este formato. Os resumos existentes serão preservados."
+                if transcript_path.suffix.casefold() != ".md" else
+                "A transcrição permanece intacta. Cada novo formato é salvo como outro arquivo, sem substituir os resumos existentes."
+            ),
             font=("Segoe UI", 10), text_color=_COLORS["muted"], anchor="w", justify=tk.LEFT,
             wraplength=560,
         ).pack(fill=tk.X, padx=16, pady=(0, 14))
@@ -9760,7 +9840,7 @@ class RecorderApp(ctk.CTk):
             dialog.destroy()
             self._start_summary_retry(
                 transcript_path, provider=provider, summary_template=selected_template_code(),
-                additional_instructions=instructions, job_id=job_id,
+                additional_instructions=instructions, job_id=job_id, profile_label=profile_value.get(),
             )
 
         ctk.CTkButton(
@@ -9777,6 +9857,7 @@ class RecorderApp(ctk.CTk):
         summary_template: str | None = None,
         additional_instructions: str | None = None,
         job_id: str | None = None,
+        profile_label: str = "",
     ) -> None:
         """Regenerate a saved summary, preserving the audio and transcription."""
         if self._name_operation_blocks(transcript_path.parent):
@@ -9800,9 +9881,14 @@ class RecorderApp(ctk.CTk):
         if not self._capture_in_progress():
             self.last_file.set(str(transcript_path.parent))
         self._show_summary_retry_progress()
+        audio_options = (
+            _LANG_CODES.get(self.pipeline_language.get(), "pt"),
+            self.pipeline_model.get(),
+            self._selected_transcription_provider_code(),
+        )
         self._pipeline_thread = threading.Thread(
             target=self._retry_summary_worker,
-            args=(transcript_path, provider, summary_template, additional_instructions, job_id),
+            args=(transcript_path, provider, summary_template, additional_instructions, job_id, profile_label, audio_options),
             daemon=True,
         )
         self._pipeline_thread.start()
@@ -9813,20 +9899,35 @@ class RecorderApp(ctk.CTk):
 
     def _retry_summary_worker(
         self, transcript_path: Path, provider: str, summary_template: str, additional_instructions: str,
-        job_id: str | None,
+        job_id: str | None, profile_label: str, audio_options: tuple[str, str, str],
     ) -> None:
         from record_transcript_resume.log import log
-        from record_transcript_resume.pipeline import retry_summary
+        from record_transcript_resume.pipeline import additional_summary_from_audio, retry_summary
 
         log(f"GUI: retrying summary | file={transcript_path} provider={provider}")
         try:
-            summary_path = retry_summary(
-                transcript_path,
-                provider=provider,  # type: ignore[arg-type]
-                summary_template=summary_template,  # type: ignore[arg-type]
-                additional_instructions=additional_instructions,
-                on_status=lambda _message: self._post_to_ui(self._set_processing_status, "Gerando nova versão do resumo…"),
-            )
+            if transcript_path.suffix.casefold() == ".md":
+                summary_path = retry_summary(
+                    transcript_path,
+                    provider=provider,  # type: ignore[arg-type]
+                    summary_template=summary_template,  # type: ignore[arg-type]
+                    additional_instructions=additional_instructions,
+                    preserve_existing=summary_available(transcript_path.parent),
+                    variant_label=profile_label,
+                    on_status=lambda _message: self._post_to_ui(self._set_processing_status, "Gerando nova versão do resumo…"),
+                )
+            else:
+                summary_path = additional_summary_from_audio(
+                    transcript_path,
+                    provider=provider,  # type: ignore[arg-type]
+                    summary_template=summary_template,  # type: ignore[arg-type]
+                    language=audio_options[0],
+                    model_size=audio_options[1],
+                    transcription_provider=audio_options[2],
+                    additional_instructions=additional_instructions,
+                    variant_label=profile_label,
+                    on_status=lambda message: self._post_to_ui(self._set_processing_status, message),
+                )
         except Exception as exc:
             log(f"GUI: summary retry failed: {type(exc).__name__}: {exc}")
             self._post_to_ui(self._on_summary_retry_error, str(exc), job_id)
@@ -9835,7 +9936,7 @@ class RecorderApp(ctk.CTk):
 
     def _on_summary_retry_done(self, summary_path: Path, job_id: str | None = None) -> None:
         self._summary_source_path = None
-        self._set_processing_status("Resumo atualizado com sucesso")
+        self._set_processing_status(f"Resumo salvo: {summary_path.name}")
         if job_id is not None:
             self._job_store.update(job_id, status="completed", stage="Resumo concluído", error="", summary_failed=False)
         if not self._capture_in_progress():
@@ -9845,7 +9946,7 @@ class RecorderApp(ctk.CTk):
         self.retry_summary_button.configure(state=tk.NORMAL)
         self._refresh_library()
         self._refresh_processing_page()
-        self._tray.notify("Resumo concluído", f"Nova versão salva em {summary_path.parent.name}.")
+        self._tray.notify("Resumo concluído", f"Nova versão salva como {summary_path.name} em {summary_path.parent.name}.")
         self.after(120, self._run_next_pending_job)
 
     def _on_summary_retry_error(self, message: str, job_id: str | None = None) -> None:
@@ -10484,7 +10585,9 @@ class RecorderApp(ctk.CTk):
                     # Clear first so a future interface refresh cannot request a
                     # second stop while the finalization worker starts.
                     self._recording_deadline = None
+                    self._recording_silence_seconds = None
                     self.after_idle(lambda: self._stop_recording(automatic=True))
+            self._check_silence_timeout()
         elif self._processing_started_at is not None:
             self.elapsed.set(duration)
         else:
@@ -10494,6 +10597,22 @@ class RecorderApp(ctk.CTk):
         self._check_disk_space()
         self._refresh_compact_controls()
         self.after(500, self._refresh_timer)
+
+    def _check_silence_timeout(self) -> None:
+        limit = self._recording_silence_seconds
+        if limit is None or self._service is None:
+            return
+        silent_for = self._service.silence_seconds
+        if silent_for is None:
+            return
+        if self._recording_deadline is None:
+            remaining = max(0, limit - int(silent_for))
+            self.recording_limit_hint.set(
+                f"Parada por silêncio em {self._format_duration(remaining)}"
+            )
+        if silent_for >= limit:
+            self._recording_silence_seconds = None
+            self.after_idle(lambda: self._stop_recording(automatic=True, silence=True))
 
     def _check_backend_alive(self) -> None:
         if self._service is None or self._service.state != RecordingState.RECORDING:
@@ -10505,6 +10624,7 @@ class RecorderApp(ctk.CTk):
             return  # stop já em andamento
         self._set_recording_action_state(stop=tk.DISABLED)
         self._recording_deadline = None
+        self._recording_silence_seconds = None
         self.recording_limit_hint.set("Sem parada automática")
         self.status.set("Capture failed...")
         self._stop_thread = threading.Thread(target=self._stop_recording_worker, daemon=True)
