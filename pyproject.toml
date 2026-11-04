@@ -1,6 +1,6 @@
 [project]
 name = "record-transcript-resume"
-version = "0.10.31"
+version = "0.10.32"
 description = "Windows app to record audio locally, transcribe with Whisper, and summarize via Codex or Claude Code CLI."
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -35,6 +35,9 @@ gpu = [
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+record_transcript_resume = ["resources/release-notes/*.json"]
 
 [project.scripts]
 record-transcript-resume = "record_transcript_resume.cli:main"

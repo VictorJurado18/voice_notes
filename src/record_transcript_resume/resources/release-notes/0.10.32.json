@@ -1,0 +1,21 @@
+{
+  "version": "0.10.32",
+  "highlights": [
+    {
+      "title": "Parada automática por silêncio",
+      "detail": "A gravação termina após 10 minutos contínuos sem som relevante. Em Gravar, você pode escolher 5, 10, 20 ou 30 minutos, ou desligar o sensor. O áudio capturado é salvo normalmente."
+    },
+    {
+      "title": "Mais resumos da mesma gravação",
+      "detail": "Na Biblioteca, use Gerar outro resumo para escolher um novo formato. Cada versão fica em um arquivo próprio, sem substituir os resumos anteriores; Ver resumos abre as versões salvas."
+    },
+    {
+      "title": "Também funciona com Somente resumo",
+      "detail": "Se a gravação foi processada no modo Somente resumo, o Voice Notes transcreve o áudio novamente para criar outro formato de resumo, preservando o áudio e o resumo inicial."
+    },
+    {
+      "title": "Novidades da versão corrigidas",
+      "detail": "As novidades agora são carregadas das notas da versão instalada. A publicação é bloqueada pelos testes se faltar o arquivo de notas correspondente."
+    }
+  ]
+}

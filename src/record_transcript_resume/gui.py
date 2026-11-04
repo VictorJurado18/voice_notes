@@ -4243,10 +4243,15 @@ class RecorderApp(ctk.CTk):
 
     def _show_whats_new(self) -> None:
         """Open offline highlights; acknowledge only when the window is mapped."""
-        from record_transcript_resume.release_notes import CURRENT_HIGHLIGHTS
+        from record_transcript_resume.release_notes import load_highlights
         from record_transcript_resume.updates import APP_VERSION
         if self._whats_new_dialog is not None and self._whats_new_dialog.winfo_exists():
             self._whats_new_dialog.lift()
+            return
+        try:
+            highlights = load_highlights(APP_VERSION)
+        except ValueError as exc:
+            messagebox.showerror("Novidades indisponíveis", str(exc))
             return
         dialog = ctk.CTkToplevel(self)
         dialog.withdraw()
@@ -4280,7 +4285,7 @@ class RecorderApp(ctk.CTk):
         body = NavigationScrollFrame(dialog, fg_color="transparent", corner_radius=0)
         body.pack(fill=tk.BOTH, expand=True, padx=18)
         labels = []
-        for heading, detail in CURRENT_HIGHLIGHTS:
+        for heading, detail in highlights:
             card = ctk.CTkFrame(body, fg_color=_COLORS["surface_alt"], corner_radius=10)
             card.pack(fill=tk.X, padx=4, pady=(0, 10))
             title_label = ctk.CTkLabel(card, text=heading, anchor="w", justify=tk.LEFT,

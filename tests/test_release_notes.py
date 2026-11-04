@@ -5,7 +5,7 @@ import json
 import pytest
 
 from record_transcript_resume import release_notes
-from record_transcript_resume.release_notes import ReleaseNoticeStore, _version
+from record_transcript_resume.release_notes import ReleaseNoticeStore, _version, load_highlights
 
 
 def test_first_install_establishes_baseline_without_a_popup(tmp_path, monkeypatch):
@@ -80,3 +80,8 @@ def test_unknown_version_does_not_write_state(tmp_path):
 def test_newer_installer_history_is_not_applied_to_an_older_executable(tmp_path, monkeypatch):
     monkeypatch.setattr(release_notes, "_install_history", lambda: ("0.10.29", "0.10.27"))
     assert not ReleaseNoticeStore(tmp_path / "notice.json").prepare("0.10.28").pending
+
+
+def test_missing_version_notes_never_fall_back_to_stale_highlights():
+    with pytest.raises(ValueError, match="não encontradas"):
+        load_highlights("99.99.99")

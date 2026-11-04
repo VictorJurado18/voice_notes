@@ -16,6 +16,20 @@ if (-not (Test-Path $Python)) {
     throw "Virtual environment not found. Run Install.bat once on the build computer."
 }
 
+$VersionMatch = Select-String -Path (Join-Path $ProjectRoot "pyproject.toml") -Pattern '^version\s*=\s*"([^"]+)"'
+if (-not $VersionMatch) {
+    throw "Could not read the application version from pyproject.toml."
+}
+$Version = $VersionMatch.Matches[0].Groups[1].Value
+$ReleaseNotesPath = Join-Path $ProjectRoot "src\record_transcript_resume\resources\release-notes\$Version.json"
+if (-not (Test-Path -LiteralPath $ReleaseNotesPath)) {
+    throw "Release notes for $Version are missing. Create the versioned JSON before building."
+}
+$ReleaseNotes = Get-Content -LiteralPath $ReleaseNotesPath -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($ReleaseNotes.version -ne $Version -or -not $ReleaseNotes.highlights.Count) {
+    throw "Release notes do not match $Version or have no highlights."
+}
+
 if ($Clean) {
     foreach ($target in @($BuildDir, $AppDistDir, (Join-Path $DistDir "VoiceNotes-Setup.exe"))) {
         if (Test-Path $target) {
@@ -134,11 +148,6 @@ if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup failed."
 }
 
-$VersionMatch = Select-String -Path (Join-Path $ProjectRoot "pyproject.toml") -Pattern '^version\s*=\s*"([^"]+)"'
-if (-not $VersionMatch) {
-    throw "Could not read the application version from pyproject.toml."
-}
-$Version = $VersionMatch.Matches[0].Groups[1].Value
 $InstallerPath = Join-Path $DistDir "VoiceNotes-Setup-$Version.exe"
 if (-not (Test-Path -LiteralPath $InstallerPath)) {
     throw "Installer was not generated: $InstallerPath"
