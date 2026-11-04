@@ -7,6 +7,7 @@ from typing import Any
 
 from record_transcript_resume.audio_backend import AudioBackend
 from record_transcript_resume.errors import AudioBackendUnavailableError, RecordingError
+from record_transcript_resume.silence_detection import SilenceTracker
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class WindowsAudioBackend(AudioBackend):
         # PortAudio while a read is still active can terminate the whole app.
         self._unreleased_audio: list[tuple[Any, Any, threading.Thread]] = []
         self._dropped_chunks = 0
+        self._silence = SilenceTracker()
 
     @property
     def capture_warning(self) -> str:
@@ -53,6 +55,10 @@ class WindowsAudioBackend(AudioBackend):
     @property
     def eq_levels(self) -> list[float]:
         return self._eq_levels
+
+    @property
+    def silence_seconds(self) -> float | None:
+        return self._silence.silent_for()
 
     @property
     def device_names(self) -> dict[str, str]:
@@ -82,6 +88,7 @@ class WindowsAudioBackend(AudioBackend):
         self._stop_event.clear()
         self._error = None
         self._dropped_chunks = 0
+        self._silence.reset()
         self._thread = threading.Thread(
             target=self._record_loop,
             args=(output_path, lameenc, numpy, mic_spec, loopback_spec),
@@ -376,6 +383,13 @@ class WindowsAudioBackend(AudioBackend):
                                 pieces.append(numpy.zeros((_OUT, self._config.channels), dtype=numpy.float32))
 
                         mixed = self._mix_chunks(numpy, pieces)
+                        # Check each captured source before mixing: opposite phases
+                        # must not cancel meaningful speech or system audio.
+                        source_rms = max(
+                            float(numpy.sqrt(numpy.mean(piece.astype(numpy.float64) ** 2)))
+                            for piece in pieces
+                        )
+                        self._silence.observe(source_rms)
                         try:
                             self._update_eq_levels(numpy, mixed)
                         except Exception:

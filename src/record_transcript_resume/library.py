@@ -151,7 +151,13 @@ def browse_directory(directory: Path, metadata_store: LibraryMetadataStore | Non
             detail = child.suffix[1:].upper()
         elif child.suffix.casefold() in {".md", ".txt", ".docx", ".pdf", ".rtf"}:
             kind = "document"
-            detail = "Transcrição" if child.name.casefold() == "transcription.md" else "Resumo" if child.name.casefold() == "summary.md" else child.suffix[1:].upper()
+            document_name = child.name.casefold()
+            if document_name == "transcription.md":
+                detail = "Transcrição"
+            elif document_name == "summary.md" or (document_name.startswith("summary-") and child.suffix.casefold() == ".md"):
+                detail = "Resumo"
+            else:
+                detail = child.suffix[1:].upper()
         else:
             kind = "file"
             detail = child.suffix[1:].upper() if child.suffix else "Arquivo"
