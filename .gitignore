@@ -18,6 +18,8 @@ OBJECTIVES.md
 prompt_pai.md
 docs/
 .claude/
+specs/
+prototypes/
 
 # Python generated files
 __pycache__/
