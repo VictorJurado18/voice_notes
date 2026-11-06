@@ -1,0 +1,17 @@
+{
+  "version": "0.10.33",
+  "highlights": [
+    {
+      "title": "Pausar e retomar a gravação",
+      "detail": "Durante a captura, use Pausar para interromper a gravação temporariamente e Retomar para continuar no mesmo arquivo de áudio. O período pausado não entra no áudio salvo."
+    },
+    {
+      "title": "Controles em todas as janelas",
+      "detail": "A pausa e a retomada também estão disponíveis no controle compacto e no ícone da bandeja. É possível parar e salvar a gravação mesmo enquanto ela está pausada."
+    },
+    {
+      "title": "Temporizadores acompanham a pausa",
+      "detail": "O tempo gravado e o limite de duração ficam congelados durante a pausa. A detecção de silêncio recomeça ao retomar."
+    }
+  ]
+}

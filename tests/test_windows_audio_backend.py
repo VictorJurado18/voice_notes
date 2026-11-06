@@ -148,6 +148,66 @@ def test_silent_loopback_stops_before_native_stream_is_closed(monkeypatch, tmp_p
     assert backend.thread_error is None
 
 
+def test_pause_discards_captured_frames_and_resumes_same_file(monkeypatch, tmp_path: Path) -> None:
+    backend = WindowsAudioBackend(WindowsAudioBackendConfig(capture_system_audio=False))
+    callbacks = []
+    encoded = []
+
+    class Stream:
+        def start_stream(self): pass
+        def stop_stream(self): pass
+        def close(self): pass
+
+    class PyAudio:
+        def open(self, **kwargs):
+            callbacks.append(kwargs["stream_callback"])
+            return Stream()
+        def terminate(self): pass
+
+    class Encoder:
+        def encode(self, pcm):
+            encoded.append(numpy.frombuffer(pcm, dtype=numpy.int16).copy())
+            return b"frame"
+        def flush(self): return b"end"
+
+    monkeypatch.setitem(sys.modules, "pyaudiowpatch", SimpleNamespace(PyAudio=PyAudio, paFloat32=1, paContinue=0))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setattr(backend, "_build_encoder", lambda _module: Encoder())
+    output = tmp_path / "capture.mp3"
+    worker = threading.Thread(target=backend._record_loop, args=(
+        output, object(), numpy, _DeviceSpec(1, "Synthetic microphone", 2, 48_000), None,
+    ))
+    backend._thread = worker
+    worker.start()
+
+    def wait_for(predicate):
+        deadline = time.monotonic() + 2
+        while not predicate() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert predicate()
+
+    try:
+        wait_for(lambda: bool(callbacks))
+        callbacks[0](numpy.full((4800, 2), 0.1, dtype=numpy.float32).tobytes(), 4800, None, None)
+        wait_for(lambda: len(encoded) == 1)
+        backend.pause()
+        callbacks[0](numpy.full((4800, 2), 0.5, dtype=numpy.float32).tobytes(), 4800, None, None)
+        time.sleep(0.05)
+        assert len(encoded) == 1
+        backend.resume()
+        callbacks[0](numpy.full((4800, 2), 0.2, dtype=numpy.float32).tobytes(), 4800, None, None)
+        wait_for(lambda: len(encoded) == 2)
+        backend.pause()
+    finally:
+        backend.stop()
+
+    assert numpy.all(encoded[0] == encoded[0][0])
+    assert numpy.all(encoded[1] == encoded[1][0])
+    assert 3000 < encoded[0][0] < 4000
+    assert 6000 < encoded[1][0] < 7000
+    assert output.read_bytes() == b"frameframeend"
+
+
 def test_microphone_queue_is_bounded_and_overload_is_reported(monkeypatch, tmp_path: Path) -> None:
     backend = WindowsAudioBackend(WindowsAudioBackendConfig(capture_system_audio=False))
     raw = numpy.zeros((480, 2), dtype=numpy.float32).tobytes()

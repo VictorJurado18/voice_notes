@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,8 @@ class WindowsAudioBackend(AudioBackend):
     def __init__(self, config: WindowsAudioBackendConfig | None = None) -> None:
         self._config = config or WindowsAudioBackendConfig()
         self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
+        self._pause_ack = threading.Event()
         self._thread: threading.Thread | None = None
         self._error: BaseException | None = None
         self._eq_levels: list[float] = [0.0] * self._N_BANDS
@@ -86,6 +89,8 @@ class WindowsAudioBackend(AudioBackend):
         log(f"Devices resolved | {self._device_names}")
 
         self._stop_event.clear()
+        self._pause_event.clear()
+        self._pause_ack.clear()
         self._error = None
         self._dropped_chunks = 0
         self._silence.reset()
@@ -113,6 +118,25 @@ class WindowsAudioBackend(AudioBackend):
             raise RecordingError(f"Audio capture failed: {type(exc).__name__}: {detail}")
 
         return None
+
+    def pause(self) -> None:
+        if not self.is_thread_alive:
+            raise RecordingError("A captura de áudio não está ativa.")
+        self._pause_event.set()
+        if not self._pause_ack.wait(timeout=2.0):
+            self._pause_event.clear()
+            raise RecordingError("A captura não confirmou a pausa. Verifique o dispositivo de áudio.")
+
+    def resume(self) -> None:
+        if not self.is_thread_alive or not self._pause_event.is_set():
+            raise RecordingError("Não há gravação pausada para retomar.")
+        self._pause_event.clear()
+        deadline = time.monotonic() + 2.0
+        while self._pause_ack.is_set() and self.is_thread_alive and time.monotonic() < deadline:
+            time.sleep(0.005)
+        if self._pause_ack.is_set():
+            self._pause_event.set()
+            raise RecordingError("A captura não confirmou a retomada. Verifique o dispositivo de áudio.")
 
     def _load_dependencies(self) -> tuple[Any, Any]:
         try:
@@ -319,6 +343,7 @@ class WindowsAudioBackend(AudioBackend):
 
             log("Streams opened successfully — capture started")
             _start_wall = _time.monotonic()
+            _pause_started: float | None = None
 
             def _drain(q: q_module.Queue, spec: _DeviceSpec, buf: Any) -> Any:
                 parts: list[Any] = []
@@ -340,6 +365,33 @@ class WindowsAudioBackend(AudioBackend):
 
             with output_path.open("wb") as file:
                 while not self._stop_event.is_set():
+                    if self._pause_event.is_set():
+                        if _pause_started is None:
+                            _pause_started = _time.monotonic()
+                        mic_buf = numpy.zeros((0, self._config.channels), dtype=numpy.float32)
+                        loop_buf = numpy.zeros((0, self._config.channels), dtype=numpy.float32)
+                        for source_queue in (mic_q, loop_q):
+                            while True:
+                                try:
+                                    source_queue.get_nowait()
+                                except q_module.Empty:
+                                    break
+                        self._eq_levels = [0.0] * self._N_BANDS
+                        self._pause_ack.set()
+                        _time.sleep(0.01)
+                        continue
+                    if _pause_started is not None:
+                        _start_wall += _time.monotonic() - _pause_started
+                        _pause_started = None
+                        self._silence.reset()
+                        # Frames queued while paused must not appear after resuming.
+                        for source_queue in (mic_q, loop_q):
+                            while True:
+                                try:
+                                    source_queue.get_nowait()
+                                except q_module.Empty:
+                                    break
+                        self._pause_ack.clear()
                     if mic_spec is not None:
                         mic_buf = _drain(mic_q, mic_spec, mic_buf)
                         if len(mic_buf) > _MAX_LOOP_FRAMES:
@@ -354,6 +406,8 @@ class WindowsAudioBackend(AudioBackend):
 
                     any_encoded = False
                     while True:
+                        if self._pause_event.is_set():
+                            break
                         # G435 loopback entrega ~2x real-time em blocking mode; gate previne encoding acelerado
                         if chunk_count >= int((_time.monotonic() - _start_wall) / _OUT_SECS) + 2:
                             _rate_gate_hits += 1
@@ -411,7 +465,9 @@ class WindowsAudioBackend(AudioBackend):
                     if remaining:
                         file.write(remaining)
 
-            _elapsed = _time.monotonic() - _start_wall
+            _elapsed = _time.monotonic() - _start_wall - (
+                _time.monotonic() - _pause_started if _pause_started is not None else 0.0
+            )
             _dur_cod = chunk_count * _OUT_SECS
             _ratio = _dur_cod / _elapsed if _elapsed > 0 else 0.0
             log(

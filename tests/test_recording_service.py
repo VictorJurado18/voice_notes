@@ -14,12 +14,19 @@ class FakeAudioBackend(AudioBackend):
     def __init__(self) -> None:
         self.started_path: Path | None = None
         self.stopped = False
+        self.paused = False
 
     def start(self, output_path: Path) -> None:
         self.started_path = output_path
 
     def stop(self) -> None:
         self.stopped = True
+
+    def pause(self) -> None:
+        self.paused = True
+
+    def resume(self) -> None:
+        self.paused = False
 
 
 class RecordingServiceTests(unittest.TestCase):
@@ -70,6 +77,31 @@ class RecordingServiceTests(unittest.TestCase):
             self.assertEqual(service.state, RecordingState.COMPLETED)
             self.assertTrue(backend.stopped)
             self.assertEqual(output_path.suffix, ".mp3")
+
+    def test_pause_resume_and_stop_from_paused_keep_one_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = FakeAudioBackend()
+            service = RecordingService(RecordingConfig(output_dir=Path(tmp)), backend)
+            output_path = service.start()
+
+            service.pause()
+            self.assertEqual(service.state, RecordingState.PAUSED)
+            self.assertTrue(backend.paused)
+            self.assertEqual(service.current_output_path, output_path)
+            with self.assertRaises(InvalidRecordingStateError):
+                service.start()
+            with self.assertRaises(InvalidRecordingStateError):
+                service.pause()
+
+            service.resume()
+            self.assertEqual(service.state, RecordingState.RECORDING)
+            self.assertFalse(backend.paused)
+            with self.assertRaises(InvalidRecordingStateError):
+                service.resume()
+            service.pause()
+            self.assertEqual(service.stop(), output_path)
+            self.assertEqual(service.state, RecordingState.COMPLETED)
+            self.assertTrue(backend.stopped)
 
     def test_stop_without_recording_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
