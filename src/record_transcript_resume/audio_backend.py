@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from record_transcript_resume.errors import AudioBackendUnavailableError
+from record_transcript_resume.errors import AudioBackendUnavailableError, RecordingError
 
 
 class AudioBackend(ABC):
@@ -16,6 +16,14 @@ class AudioBackend(ABC):
     @abstractmethod
     def stop(self) -> None:
         """Stop recording and finalize the output file."""
+
+    def pause(self) -> None:
+        """Suspend writing captured audio without finalizing the output file."""
+        raise RecordingError("This audio backend does not support pausing.")
+
+    def resume(self) -> None:
+        """Continue writing to the current output file."""
+        raise RecordingError("This audio backend does not support resuming.")
 
 
 class UnavailableAudioBackend(AudioBackend):

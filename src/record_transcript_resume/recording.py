@@ -15,6 +15,7 @@ MIN_FREE_BYTES = 100 * 1024 * 1024  # 100 MB
 class RecordingState(str, Enum):
     IDLE = "idle"
     RECORDING = "recording"
+    PAUSED = "paused"
     FINALIZING = "finalizing"
     COMPLETED = "completed"
     ERROR = "error"
@@ -90,7 +91,7 @@ class RecordingService:
         return True
 
     def start(self) -> Path:
-        if self._state == RecordingState.RECORDING:
+        if self._state in {RecordingState.RECORDING, RecordingState.PAUSED}:
             raise InvalidRecordingStateError("A recording is already in progress.")
 
         output_path = self._prepare_output_path()
@@ -112,8 +113,20 @@ class RecordingService:
         self._current_output_path = output_path
         return output_path
 
-    def stop(self) -> Path:
+    def pause(self) -> None:
         if self._state != RecordingState.RECORDING:
+            raise InvalidRecordingStateError("No active recording to pause.")
+        self._backend.pause()
+        self._state = RecordingState.PAUSED
+
+    def resume(self) -> None:
+        if self._state != RecordingState.PAUSED:
+            raise InvalidRecordingStateError("No paused recording to resume.")
+        self._backend.resume()
+        self._state = RecordingState.RECORDING
+
+    def stop(self) -> Path:
+        if self._state not in {RecordingState.RECORDING, RecordingState.PAUSED}:
             raise InvalidRecordingStateError("No recording in progress to stop.")
 
         if self._current_output_path is None:

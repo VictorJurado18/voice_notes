@@ -62,7 +62,7 @@ O instalador já inclui tudo o que o app precisa — não é necessário instala
 1. **Instale.** Baixe `VoiceNotes-Setup-x.y.z.exe` na [página de versões](https://github.com/VictorJurado18/voice_notes/releases/latest) e execute. Se quiser resumos via Codex CLI ou Claude Code, marque a instalação opcional deles.
 2. **Configure a gravação.** Abra **Voice Notes** pelo menu Iniciar. Na página **Gravar**, escolha a **Fonte de áudio** e confira a pasta em **Salvar em**.
 3. **Escolha o resultado.** Em **Depois de parar**, selecione **Salvar só o áudio**, **Áudio + transcrição** ou **Áudio + transcrição + resumo**.
-4. **Grave.** Clique em **Iniciar gravação** e, ao terminar, em **Parar**. Em **Parar após silêncio**, o padrão é 10 minutos; você pode escolher outro prazo ou desligar o sensor. Acompanhe o processamento em **Processos** — você pode ocultar a janela enquanto ele roda.
+4. **Grave.** Clique em **Iniciar gravação**. Use **Pausar** e **Retomar** quando precisar interromper temporariamente a captura; o trecho pausado não entra no áudio. Ao terminar, clique em **Parar**, inclusive se a gravação estiver pausada. Os controles também aparecem no widget compacto e no ícone da bandeja. Em **Parar após silêncio**, o padrão é 10 minutos; você pode escolher outro prazo ou desligar o sensor. Acompanhe o processamento em **Processos** — você pode ocultar a janela enquanto ele roda.
 
 Cada gravação ganha sua própria pasta, por padrão em `Música\record-transcript-resume`:
 

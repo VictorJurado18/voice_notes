@@ -314,6 +314,11 @@ class _TrayController:
                         enabled=lambda _item: self._app._tray_can_start_meeting(),
                     ),
                     pystray.MenuItem(
+                        lambda _item: "Retomar gravação" if self._app._recording_is_paused() else "Pausar gravação",
+                        self._toggle_pause_meeting,
+                        enabled=lambda _item: self._app._tray_can_stop_meeting(),
+                    ),
+                    pystray.MenuItem(
                         "Parar gravação", self._stop_meeting,
                         enabled=lambda _item: self._app._tray_can_stop_meeting(),
                     ),
@@ -346,6 +351,9 @@ class _TrayController:
 
     def _stop_meeting(self, *_: object) -> None:
         self._app.after(0, self._app._stop_recording_from_tray)
+
+    def _toggle_pause_meeting(self, *_: object) -> None:
+        self._app.after(0, self._app._toggle_pause_recording)
 
     def _quit(self, *_: object) -> None:
         self._app.after(0, self._app._on_close)
@@ -439,6 +447,7 @@ class RecorderApp(ctk.CTk):
 
         self._service: RecordingService | None = None
         self._started_at: float | None = None
+        self._paused_at: float | None = None
         self._last_output: Path | None = None
         self._stop_thread: threading.Thread | None = None
         self._pipeline_thread: threading.Thread | None = None
@@ -1079,6 +1088,12 @@ class RecorderApp(ctk.CTk):
             font=("Segoe UI", 14, "bold"),
         )
         self.start_button.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.pause_button = ctk.CTkButton(
+            self._buttons, text="Pausar", command=self._toggle_pause_recording,
+            state=tk.DISABLED, width=90, height=42, corner_radius=13,
+            fg_color=_theme_color("#27344D"), hover_color=_theme_color("#3A4865"),
+            text_color=_COLORS["text"], font=("Segoe UI", 13, "bold"),
+        )
         self.stop_button = ctk.CTkButton(
             self._buttons, text="Parar", command=self._stop_recording,
             state=tk.DISABLED, width=90, height=42, corner_radius=13,
@@ -1094,6 +1109,12 @@ class RecorderApp(ctk.CTk):
             font=("Segoe UI", 14, "bold"),
         )
         self.inline_start_button.pack(side=tk.LEFT)
+        self.inline_pause_button = ctk.CTkButton(
+            self._inline_buttons, text="Pausar", command=self._toggle_pause_recording,
+            state=tk.DISABLED, width=90, height=44, corner_radius=13,
+            fg_color=_theme_color("#27344D"), hover_color=_theme_color("#3A4865"),
+            text_color=_COLORS["text"], font=("Segoe UI", 13, "bold"),
+        )
         self.inline_stop_button = ctk.CTkButton(
             self._inline_buttons, text="Parar", command=self._stop_recording,
             state=tk.DISABLED, width=90, height=44, corner_radius=13,
@@ -2551,6 +2572,11 @@ class RecorderApp(ctk.CTk):
             font=("Segoe UI", 11, "bold"),
         )
         self._focus_start_button.pack(side=tk.LEFT)
+        self._focus_pause_button = ctk.CTkButton(
+            action, text="Pausar", command=self._toggle_pause_recording,
+            width=90, height=39, corner_radius=7, state=tk.DISABLED,
+            fg_color=_theme_color("#263550"), hover_color=_theme_color("#34476B"),
+        )
         self._focus_stop_button = ctk.CTkButton(
             action, text="Parar", command=self._stop_recording,
             width=90, height=39, corner_radius=7, state=tk.DISABLED,
@@ -2563,7 +2589,9 @@ class RecorderApp(ctk.CTk):
 
     def _sync_focus_record_status(self, *_: object) -> None:
         raw = self.status.get().casefold()
-        if "grava" in raw or raw == "recording":
+        if raw == "pausada":
+            status = "Pausada"
+        elif "grava" in raw or raw == "recording":
             status = "Gravando" if raw == "recording" else "Pronto"
         elif "erro" in raw or "error" in raw or "falha" in raw:
             status = "Atenção"
@@ -3968,7 +3996,7 @@ class RecorderApp(ctk.CTk):
         meter = getattr(self, "_meter_card", None)
         if meter is None:
             return
-        recording = self._service is not None and self._service.state == RecordingState.RECORDING
+        recording = self._service is not None and self._service.state in {RecordingState.RECORDING, RecordingState.PAUSED}
         errored = any(word in self.status.get().casefold() for word in ("error", "erro", "falha"))
         self._status_indicator.configure(
             fg_color=_theme_color("#F4A7A8") if recording or errored else _theme_color("#55D6A0")
@@ -5312,7 +5340,7 @@ class RecorderApp(ctk.CTk):
         return self._maximized and self._wide_shell and self.winfo_height() >= 760
 
     def _set_recording_action_state(
-        self, *, start: str | None = None, stop: str | None = None,
+        self, *, start: str | None = None, stop: str | None = None, pause: str | None = None,
         show_stop: bool | None = None,
     ) -> None:
         """Mirror recording controls in the fixed and inline action bars."""
@@ -5324,16 +5352,24 @@ class RecorderApp(ctk.CTk):
             self.stop_button.configure(state=stop)
             self.inline_stop_button.configure(state=stop)
             self._focus_stop_button.configure(state=stop)
+        if pause is not None:
+            for button in (self.pause_button, self.inline_pause_button, self._focus_pause_button):
+                button.configure(state=pause)
         if show_stop is not None:
-            for button in (self.stop_button, self.inline_stop_button):
+            for button, pause_button in ((self.stop_button, self.pause_button),
+                                          (self.inline_stop_button, self.inline_pause_button)):
                 if show_stop and not button.winfo_manager():
                     button.pack(side=tk.LEFT, padx=(8, 0))
+                    pause_button.pack(side=tk.LEFT, padx=(8, 0), before=button)
                 elif not show_stop:
                     button.pack_forget()
+                    pause_button.pack_forget()
             if show_stop and not self._focus_stop_button.winfo_manager():
                 self._focus_stop_button.pack(side=tk.LEFT, padx=(8, 0))
+                self._focus_pause_button.pack(side=tk.LEFT, padx=(8, 0), before=self._focus_stop_button)
             elif not show_stop:
                 self._focus_stop_button.pack_forget()
+                self._focus_pause_button.pack_forget()
 
     def _make_draggable(self, *widgets: tk.Misc) -> None:
         for widget in widgets:
@@ -5737,12 +5773,15 @@ class RecorderApp(ctk.CTk):
         if not self._compact_mode:
             return
         recording = self._service is not None and self._service.state == RecordingState.RECORDING
+        paused = self._recording_is_paused()
         finalizing = self._stop_thread is not None and self._stop_thread.is_alive()
         processing = self._pipeline_thread is not None and self._pipeline_thread.is_alive()
-        if recording:
-            label, color = f"GRAVANDO  {self.elapsed.get()}", _COLORS["success"]
-        elif finalizing:
+        if finalizing:
             label, color = "FINALIZANDO GRAVAÇÃO", _COLORS["warning"]
+        elif paused:
+            label, color = f"PAUSADA  {self.elapsed.get()}", _COLORS["warning"]
+        elif recording:
+            label, color = f"GRAVANDO  {self.elapsed.get()}", _COLORS["success"]
         elif self._recording_failure:
             label, color = "GRAVAÇÃO INTERROMPIDA · ABRIR PARA VER", _COLORS["danger"]
         elif processing:
@@ -5754,8 +5793,12 @@ class RecorderApp(ctk.CTk):
             label, color = "PRONTO PARA GRAVAR", _COLORS["success"]
         self._compact_status.set(label)
         self._compact_indicator.configure(fg_color=color)
-        self.compact_start_button.configure(state=tk.DISABLED if recording or finalizing else tk.NORMAL)
-        self.compact_stop_button.configure(state=tk.NORMAL if recording else tk.DISABLED)
+        self.compact_start_button.configure(
+            text="Retomar" if paused else "Pausar" if recording else "Iniciar",
+            command=self._toggle_pause_recording if paused or recording else self._start_recording,
+            state=tk.DISABLED if finalizing else tk.NORMAL,
+        )
+        self.compact_stop_button.configure(state=tk.NORMAL if recording or paused else tk.DISABLED)
 
     def _hide_to_tray(self) -> None:
         """Remove the widget from the desktop while keeping its tray controls."""
@@ -7693,7 +7736,7 @@ class RecorderApp(ctk.CTk):
         service = self._service
         finalizing = self._stop_thread is not None and self._stop_thread.is_alive()
         if service is not None and (
-            service.state in {RecordingState.RECORDING, RecordingState.FINALIZING} or finalizing
+            service.state in {RecordingState.RECORDING, RecordingState.PAUSED, RecordingState.FINALIZING} or finalizing
         ):
             audio = service.current_output_path
             if audio is not None and path_is_within(audio, target):
@@ -9079,12 +9122,15 @@ class RecorderApp(ctk.CTk):
         self._open_summary_regeneration_dialog(item.transcript_path or item.mp3_path)
 
     def _tray_can_start_meeting(self) -> bool:
-        recording = self._service is not None and self._service.state == RecordingState.RECORDING
+        recording = self._service is not None and self._service.state in {RecordingState.RECORDING, RecordingState.PAUSED}
         finalizing = self._stop_thread is not None and self._stop_thread.is_alive()
         return not recording and not finalizing
 
     def _tray_can_stop_meeting(self) -> bool:
-        return self._service is not None and self._service.state == RecordingState.RECORDING
+        return self._service is not None and self._service.state in {RecordingState.RECORDING, RecordingState.PAUSED}
+
+    def _recording_is_paused(self) -> bool:
+        return self._service is not None and self._service.state == RecordingState.PAUSED
 
     def _start_recording_from_tray(self) -> None:
         """Start safely from the notification area without forcing the window open."""
@@ -9155,6 +9201,7 @@ class RecorderApp(ctk.CTk):
             "separate_speakers": self.diarize_speakers.get(),
         }
         self._started_at = time.monotonic()
+        self._paused_at = None
         self._recording_deadline = self._started_at + limit_seconds if limit_seconds else None
         self._recording_silence_seconds = {
             "Desligado": None, "5 minutos": 300, "10 minutos": 600,
@@ -9171,23 +9218,56 @@ class RecorderApp(ctk.CTk):
         else:
             self.recording_limit_hint.set("Sem parada automática")
         self.last_file.set(str(output_path))
-        self._set_recording_action_state(start=tk.DISABLED, stop=tk.NORMAL, show_stop=True)
+        self._set_recording_action_state(start=tk.DISABLED, stop=tk.NORMAL, pause=tk.NORMAL, show_stop=True)
         self._refresh_compact_controls()
         self._set_capture_preferences_state(tk.DISABLED)
         self._update_device_info()
 
+    def _toggle_pause_recording(self) -> None:
+        if self._service is None or self._stop_thread is not None and self._stop_thread.is_alive():
+            return
+        try:
+            if self._service.state == RecordingState.RECORDING:
+                self._service.pause()
+                self._paused_at = time.monotonic()
+                self.status.set("Pausada")
+                label = "Retomar"
+            elif self._service.state == RecordingState.PAUSED:
+                self._service.resume()
+                now = time.monotonic()
+                if self._paused_at is not None:
+                    paused_for = now - self._paused_at
+                    if self._started_at is not None:
+                        self._started_at += paused_for
+                    if self._recording_deadline is not None:
+                        self._recording_deadline += paused_for
+                self._paused_at = None
+                self.status.set("Recording")
+                label = "Pausar"
+            else:
+                return
+        except RecordingError as exc:
+            messagebox.showerror("Falha ao mudar a gravação", str(exc))
+            return
+        for button in (self.pause_button, self.inline_pause_button, self._focus_pause_button):
+            button.configure(text=label)
+        self._tray.refresh()
+        self._sync_recording_meter()
+        self._refresh_compact_controls()
+
     def _stop_recording(self, automatic: bool = False, silence: bool = False) -> None:
         from record_transcript_resume.log import log
-        if self._service is None or self._service.state != RecordingState.RECORDING:
+        if self._service is None or self._service.state not in {RecordingState.RECORDING, RecordingState.PAUSED}:
             log("GUI: _stop_recording skipped (service None or not recording)")
             return
         if self._stop_thread is not None and self._stop_thread.is_alive():
             return
         log("GUI: _stop_recording chamado — iniciando worker thread")
         self._started_at = None
+        self._paused_at = None
         self._recording_deadline = None
         self._recording_silence_seconds = None
-        self._set_recording_action_state(stop=tk.DISABLED)
+        self._set_recording_action_state(stop=tk.DISABLED, pause=tk.DISABLED)
         self.status.set(
             "Silêncio prolongado · finalizando..." if silence else
             "Tempo concluído · finalizando..." if automatic else "Finalizando gravação..."
@@ -9219,6 +9299,7 @@ class RecorderApp(ctk.CTk):
 
     def _show_stop_error(self, message: str) -> None:
         self._started_at = None
+        self._paused_at = None
         self._recording_deadline = None
         self._recording_silence_seconds = None
         self._recording_failure = message
@@ -9226,7 +9307,7 @@ class RecorderApp(ctk.CTk):
         self.status.set("Falha ao finalizar gravação")
         self._sync_recording_meter()
         self.device_info_text.set("")
-        self._set_recording_action_state(start=tk.NORMAL, stop=tk.DISABLED, show_stop=False)
+        self._set_recording_action_state(start=tk.NORMAL, stop=tk.DISABLED, pause=tk.DISABLED, show_stop=False)
         self.process_button.configure(state=tk.NORMAL)
         self.retry_summary_button.configure(state=tk.NORMAL)
         self.provider_selector.configure(state="readonly")
@@ -9239,9 +9320,10 @@ class RecorderApp(ctk.CTk):
     def _show_completed(self, output_path: Path) -> None:
         from record_transcript_resume.log import log
         log(f"GUI: _show_completed chamado -> {output_path.name}")
-        self._set_recording_action_state(stop=tk.DISABLED, show_stop=False)
+        self._set_recording_action_state(stop=tk.DISABLED, pause=tk.DISABLED, show_stop=False)
         self.device_info_text.set("")
         self._started_at = None
+        self._paused_at = None
         self._recording_deadline = None
         self._recording_silence_seconds = None
         self.recording_limit_hint.set("Sem parada automática")
@@ -10009,7 +10091,7 @@ class RecorderApp(ctk.CTk):
     def _capture_in_progress(self) -> bool:
         service = getattr(self, "_service", None)
         finalizing = getattr(self, "_stop_thread", None)
-        return (service is not None and service.state in {RecordingState.RECORDING, RecordingState.FINALIZING}
+        return (service is not None and service.state in {RecordingState.RECORDING, RecordingState.PAUSED, RecordingState.FINALIZING}
                 or finalizing is not None and finalizing.is_alive())
 
     def _audio_is_being_written(self, path: Path) -> bool:
@@ -10573,16 +10655,17 @@ class RecorderApp(ctk.CTk):
             processing_seconds = int(time.monotonic() - self._processing_started_at)
             duration = self._format_duration(processing_seconds)
             activity = self._processing_activity or "Processando"
-            parallel = " · gravação em andamento" if self._started_at is not None else ""
+            parallel = " · gravação pausada" if self._paused_at is not None else " · gravação em andamento" if self._started_at is not None else ""
             self._processing_feedback.set(f"{activity} há {duration}{parallel}.")
             if hasattr(self, "library_summary_progress_text"):
                 self.library_summary_progress_text.set(f"{activity} · {duration}")
         if self._started_at is not None:
-            seconds = int(time.monotonic() - self._started_at)
+            now = self._paused_at if self._paused_at is not None else time.monotonic()
+            seconds = int(now - self._started_at)
             minutes, remainder = divmod(seconds, 60)
             self.elapsed.set(f"{minutes:02d}:{remainder:02d}")
             if self._recording_deadline is not None:
-                remaining = max(0, round(self._recording_deadline - time.monotonic()))
+                remaining = max(0, round(self._recording_deadline - now))
                 self.recording_limit_hint.set(
                     f"Parada automática em {self._format_duration(remaining)}"
                 )
@@ -10592,7 +10675,8 @@ class RecorderApp(ctk.CTk):
                     self._recording_deadline = None
                     self._recording_silence_seconds = None
                     self.after_idle(lambda: self._stop_recording(automatic=True))
-            self._check_silence_timeout()
+            if self._paused_at is None:
+                self._check_silence_timeout()
         elif self._processing_started_at is not None:
             self.elapsed.set(duration)
         else:
@@ -10605,7 +10689,7 @@ class RecorderApp(ctk.CTk):
 
     def _check_silence_timeout(self) -> None:
         limit = self._recording_silence_seconds
-        if limit is None or self._service is None:
+        if limit is None or self._service is None or self._service.state != RecordingState.RECORDING:
             return
         silent_for = self._service.silence_seconds
         if silent_for is None:
@@ -10620,14 +10704,14 @@ class RecorderApp(ctk.CTk):
             self.after_idle(lambda: self._stop_recording(automatic=True, silence=True))
 
     def _check_backend_alive(self) -> None:
-        if self._service is None or self._service.state != RecordingState.RECORDING:
+        if self._service is None or self._service.state not in {RecordingState.RECORDING, RecordingState.PAUSED}:
             return
         if self._service.is_backend_alive:
             return
         # Thread morreu durante a gravação — acionar stop imediatamente
         if self._stop_thread is not None and self._stop_thread.is_alive():
             return  # stop já em andamento
-        self._set_recording_action_state(stop=tk.DISABLED)
+        self._set_recording_action_state(stop=tk.DISABLED, pause=tk.DISABLED)
         self._recording_deadline = None
         self._recording_silence_seconds = None
         self.recording_limit_hint.set("Sem parada automática")
@@ -10636,7 +10720,7 @@ class RecorderApp(ctk.CTk):
         self._stop_thread.start()
 
     def _check_disk_space(self) -> None:
-        if self._service is None or self._service.state != RecordingState.RECORDING:
+        if self._service is None or self._service.state not in {RecordingState.RECORDING, RecordingState.PAUSED}:
             self.disk_warning.set("")
             return
         if self._last_output is None:
@@ -10661,7 +10745,7 @@ class RecorderApp(ctk.CTk):
             return "geração da descrição curta"
         if getattr(self, "_name_active_audio", None) is not None:
             return "sugestão de nome da gravação"
-        if self._service is not None and self._service.state == RecordingState.RECORDING:
+        if self._service is not None and self._service.state in {RecordingState.RECORDING, RecordingState.PAUSED}:
             return "gravação"
         if self._stop_thread is not None and self._stop_thread.is_alive():
             return "finalização da gravação"
